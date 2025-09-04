@@ -10,6 +10,7 @@ from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
+from .A4_contoller_cfg import A4ForcesController
 
 
 
@@ -92,5 +93,6 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
     lin_vel_reward_scale = -0.05
     ang_vel_reward_scale = -0.01
     distance_to_goal_reward_scale = 15.0
+    control = A4ForcesController()
 
     

@@ -57,6 +57,8 @@ class TrainingA4dEnv(DirectRLEnv):
         self._gravity_magnitude = torch.tensor(self.sim.cfg.gravity, device=self.device).norm()
         self._total_weight = self._total_mass * self._gravity_magnitude
 
+        self.control = cfg.control 
+
         # add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
         self.set_debug_vis(self.cfg.debug_vis)
 
@@ -64,7 +66,7 @@ class TrainingA4dEnv(DirectRLEnv):
 
     def _setup_scene(self):
         
-        self.robot = omni.isaac.core.utils.prims.get_prim_at_path("/World/envs/env_0/A4") #TO-DO: set the proper path
+        self.A4 = omni.isaac.core.utils.prims.get_prim_at_path("/World/envs/env_0/A4D") #TO-DO: set the proper path
         print(self.robot)
 
         rigid_bodies = []    # List of rigid bodies in agent A4
@@ -105,7 +107,7 @@ class TrainingA4dEnv(DirectRLEnv):
 
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
-        
+
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
 
@@ -138,10 +140,18 @@ class TrainingA4dEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone()
 
-    def _apply_action(self) -> None:
-        self.robot.set_joint_effort_target(self.actions * self.cfg.action_scale, joint_ids=self._cart_dof_idx)
+    def _apply_action(self) -> None:   # TO-DO
+        #self.robot.set_joint_effort_target(self.actions * self.cfg.action_scale, joint_ids=self._cart_dof_idx)
+        self.control.apply_forces( 
+            rigid_view, # self._drone_dof_idx ?
+            env_ids,    # ?
+            motor_cmds01, # Sequence[Sequence[float]]
+            add_reaction_torque = True
+            )
+        
 
-    def _get_observations(self) -> dict:
+
+    def _get_observations(self) -> dict: # TO-DO
         obs = torch.cat(
             (
                 self.joint_pos[:, self._pole_dof_idx[0]].unsqueeze(dim=1),
@@ -153,8 +163,10 @@ class TrainingA4dEnv(DirectRLEnv):
         )
         observations = {"policy": obs}
         return observations
+    
 
-    def _get_rewards(self) -> torch.Tensor:
+
+    def _get_rewards(self) -> torch.Tensor: # TO-DO
         total_reward = compute_rewards(
             self.cfg.rew_scale_alive,
             self.cfg.rew_scale_terminated,
@@ -169,7 +181,7 @@ class TrainingA4dEnv(DirectRLEnv):
         )
         return total_reward
 
-    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]: # TO-DO
         self.joint_pos = self.robot.data.joint_pos
         self.joint_vel = self.robot.data.joint_vel
 
@@ -178,7 +190,7 @@ class TrainingA4dEnv(DirectRLEnv):
         out_of_bounds = out_of_bounds | torch.any(torch.abs(self.joint_pos[:, self._pole_dof_idx]) > math.pi / 2, dim=1)
         return out_of_bounds, time_out
 
-    def _reset_idx(self, env_ids: Sequence[int] | None):
+    def _reset_idx(self, env_ids: Sequence[int] | None): # TO-DO
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
@@ -202,7 +214,7 @@ class TrainingA4dEnv(DirectRLEnv):
         self.robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
-    def _set_debug_vis_impl(self, debug_vis: bool):
+    def _set_debug_vis_impl(self, debug_vis: bool): 
         # create markers if necessary for the first time
         if debug_vis:
             if not hasattr(self, "goal_pos_visualizer"):

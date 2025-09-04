@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Sequence, Tuple
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import RigidObjectCfg, RigidPrimView
+from isaaclab.assets import RigidObjectCfg #, RigidPrimView
 #from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 # --------------------------------------------------------------------------------------
@@ -72,7 +72,7 @@ class QuadMotorForcesParams:
 
 
 
-class QuadMotorForcesController:
+class A4ForcesController:
     """Applies thrust forces at motor loci on a single rigid body.
 
     Usage (per step, per env):
