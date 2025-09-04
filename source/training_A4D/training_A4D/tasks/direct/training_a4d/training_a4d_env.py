@@ -6,14 +6,25 @@
 from __future__ import annotations
 
 import math
+import gymnasium as gym
 import torch
+import omni
+from pxr import UsdPhysics
+
 from collections.abc import Sequence
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
+from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.envs import DirectRLEnv
+from isaaclab.envs.ui import BaseEnvWindow
+from isaaclab.markers import VisualizationMarkers
+from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sim import SimulationCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils.math import sample_uniform
+from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.utils import configclass
+from isaaclab.utils.math import sample_uniform, subtract_frame_transforms
+from isaaclab.assets import RigidPrimView
 
 from .training_a4d_env_cfg import TrainingA4dEnvCfg
 
@@ -24,26 +35,105 @@ class TrainingA4dEnv(DirectRLEnv):
     def __init__(self, cfg: TrainingA4dEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        self._cart_dof_idx, _ = self.robot.find_joints(self.cfg.cart_dof_name)
-        self._pole_dof_idx, _ = self.robot.find_joints(self.cfg.pole_dof_name)
+        self.stage = omni.usd.get_context().get_stage()
 
-        self.joint_pos = self.robot.data.joint_pos
-        self.joint_vel = self.robot.data.joint_vel
+        # Total thrust and moment applied to the base of the quadcopter
+        self._actions = torch.zeros(self.num_envs, gym.spaces.flatdim(self.single_action_space), device=self.device)
+        self._thrust = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        self._moment = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        # Goal position
+        self._desired_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+
+        # Logging
+        self._episode_sums = {
+            key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+            for key in [
+                "lin_vel",
+                "ang_vel",
+                "distance_to_goal",
+            ]
+        }
+        
+        self._gravity_magnitude = torch.tensor(self.sim.cfg.gravity, device=self.device).norm()
+        self._total_weight = self._total_mass * self._gravity_magnitude
+
+        # add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
+        self.set_debug_vis(self.cfg.debug_vis)
+
+
 
     def _setup_scene(self):
-        self.robot = Articulation(self.cfg.robot_cfg)
+        
+        self.robot = omni.isaac.core.utils.prims.get_prim_at_path("/World/envs/env_0/A4") #TO-DO: set the proper path
+        print(self.robot)
+
+        rigid_bodies = []    # List of rigid bodies in agent A4
+        total_mass = 0.0
+        for prim in self.stage.Traverse():
+            if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                if str(prim.GetPath()).startswith("/World/envs/env_0/A4"): #TO-DO: set the proper path
+                    rigid_bodies.append(prim)
+                    mass_api = UsdPhysics.MassAPI(prim)
+                    mass_attr = mass_api.GetMassAttr()
+                    if mass_attr.HasAuthoredValue(): total_mass += mass_attr.Get()
+        print("Rigid bodies:", [rb.GetPath() for rb in rigid_bodies])
+        self._total_mass = total_mass
+        print(f"self._total_mass = ", total_mass)
+
+        joints = []
+        joint_api = UsdPhysics.Joint(joint)
+        for prim in self.stage.Traverse():
+            if prim.IsA(UsdPhysics.Joint):
+                x = str(prim.GetPath())
+                if x.startswith("/World/envs/env_0/A4"): #TO-DO: set the proper path
+                    joints.append(prim) 
+                    if  x == self.cfg.holder_dof_name: # a RigidPrimView would be more convenient for more than two joints and three components
+                        self._holder_dof_idx = prim  
+                        #self._holder_dof_pos = "joint_api."#TO-DO
+                        #self._holder_dof_vel = ""#TO-DO
+                    elif x == self.cfg.drone_dof_name: 
+                        self._drone_dof_idx =  prim
+        print("Joints:", [j.GetPath() for j in joints])
+
+        for joint in joints:
+            body0 = joint_api.GetBody0Rel().GetTargets()
+            body1 = joint_api.GetBody1Rel().GetTargets()
+            print(f"Joint {joint.GetPath()} connects {body0} <-> {body1}")
+
+
+
+
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
+        
+        # clone and replicate
+        self.scene.clone_environments(copy_from_source=False)
+
+        # we need to explicitly filter collisions for CPU simulation
+        if self.device == "cpu":
+            self.scene.filter_collisions(global_prim_paths=[])
+
+        # add articulation to scene
+        # self.scene.articulations["robot"] = self.robot
+
+        # add lights
+        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+        light_cfg.func("/World/Light", light_cfg)
+
+
+
+        self.cfg.terrain.num_envs = self.scene.cfg.num_envs
+        self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
+        self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
         # we need to explicitly filter collisions for CPU simulation
         if self.device == "cpu":
-            self.scene.filter_collisions(global_prim_paths=[])
-        # add articulation to scene
-        self.scene.articulations["robot"] = self.robot
+            self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
+
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone()
@@ -111,6 +201,22 @@ class TrainingA4dEnv(DirectRLEnv):
         self.robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
         self.robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+
+    def _set_debug_vis_impl(self, debug_vis: bool):
+        # create markers if necessary for the first time
+        if debug_vis:
+            if not hasattr(self, "goal_pos_visualizer"):
+                marker_cfg = CUBOID_MARKER_CFG.copy()
+                marker_cfg.markers["cuboid"].size = (0.05, 0.05, 0.05)
+                # -- goal pose
+                marker_cfg.prim_path = "/Visuals/Command/goal_position"
+                self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)
+            # set their visibility to true
+            self.goal_pos_visualizer.set_visibility(True)
+        else:
+            if hasattr(self, "goal_pos_visualizer"):
+                self.goal_pos_visualizer.set_visibility(False)
+
 
 
 @torch.jit.script
