@@ -13,30 +13,11 @@ from typing import Sequence, Tuple
 import isaaclab.sim as sim_utils
 from isaaclab.assets import RigidObjectCfg #, RigidPrimView
 #from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+import omni
+from pxr import UsdGeom, PhysxSchema, Gf
+from scipy.spatial.transform import Rotation
 
-# --------------------------------------------------------------------------------------
-# Configuration: spawn as ONE rigid body (no joints/articulation)
-# --------------------------------------------------------------------------------------
 
-A4_RIGID_CFG = RigidObjectCfg(
-    prim_path="/home/fom/Documents/ISAAC5/",
-    spawn=sim_utils.UsdFileCfg(
-        usd_path=f"/home/fom/Documents/ISAAC5/AASSEM4D_with_joints.usda",
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
-            disable_gravity=False,
-            max_depenetration_velocity=10.0,
-            enable_gyroscopic_forces=True,
-        ),
-        # note: no articulation_props here — we’re not using an articulation
-        copy_from_source=False,
-    ),
-    init_state=RigidObjectCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.5),    # start 0.5 m above ground
-        rot=(0.0, 0.0, 0.0, 1.0),  # identity quaternion (x,y,z,w)
-        joint_pos=(0.0, 0.0),
-        joint_vel=(0.0, 0.0)
-    ),
-)
 """Configuration for the A4 as a single rigid body (no articulation)."""
 
 # --------------------------------------------------------------------------------------
@@ -93,8 +74,7 @@ class A4ForcesController:
 
     def apply_forces(
         self,
-        rigid_view,
-        env_ids,
+        drones,
         motor_cmds01: Sequence[Sequence[float]],
         add_reaction_torque: bool = True,
         ):
@@ -107,23 +87,35 @@ class A4ForcesController:
             add_reaction_torque: if True, apply yaw torques from rotor drag
         """
         # 1) Query world poses for the body (positions and orientations)
-        #    Depending on the view class, the API is usually:
-        #       world_pos, world_quat = rigid_view.get_world_poses(env_ids)
-        world_pos, world_quat = rigid_view.get_world_poses(env_ids)
+        xform = [UsdGeom.Xformable(p) for p in drones]
+        world_transform = [xformi.ComputeLocalToWorldTransform(0.0) for xformi in xform]
+        world_pos  = [wt.ExtractTranslation() for wt in world_transform]
+        world_quat = [wt.ExtractRotationQuat() for wt in world_transform]
 
         # Expect array/tensor shapes: (N, 3) and (N, 4)
         # Convert quat to rotation matrices; Isaac Lab usually offers a helper in math utils.
-        # If not, implement a small quat->R; here we assume a helper exists:
-        from isaaclab.utils.math import quat_to_matrix  # typical location; adjust if needed
-        R = quat_to_matrix(world_quat)  # (N, 3, 3)
+        # If not, implement a small quat->R; here we assume a helper quat_to_matrix exists:
+        
+        R = Rotation.from_quat(world_quat)  # (N, 3, 3)
 
-        N = len(env_ids)
+        N = len(drones)
         # Precompute world-space application points and forces
         world_points = []
         world_forces = []
-        world_torques = [] if add_reaction_torque else None
+        #world_torques = [] if add_reaction_torque else None
+
+        # Get the current stage
+        #stage = omni.usd.get_context().get_stage()
 
         for i in range(N):
+            drone = drones[i]
+            # Attach PhysX API wrapper
+            rb_api = PhysxSchema.PhysxRigidBodyAPI.Apply(drone)  # Apply() ensures it’s active
+
+            # Define force and position (world coordinates)
+            #force = Gf.Vec3f(0.0, 0.0, 10.0)       # Newtons
+            #position = Gf.Vec3f(0.1, 0.0, 0.0)     # meters, world frame
+
             Ri = R[i]              # (3,3)
             pi = world_pos[i]      # (3,)
 
@@ -141,6 +133,9 @@ class A4ForcesController:
                 F_vec = (thrust_dir_world[0] * Fm,
                          thrust_dir_world[1] * Fm,
                          thrust_dir_world[2] * Fm)
+
+                # Apply force at position
+                rb_api.GetApplyForceAtPosAttr().Set([(F_vec, p_app)])
 
                 world_points.append(p_app)
                 world_forces.append(F_vec)
@@ -166,19 +161,18 @@ class A4ForcesController:
                     F1 = F_mag * perp
                     F2 = -F1
 
+                    # Apply force at position
+                    rb_api.GetApplyForceAtPosAttr().Set([(F1, p1), (F2, p2)])
+                    
                     world_points.extend([p1, p2])
                     world_forces.extend([F1, F2])
 
+        
         # 2) Apply all forces (and optional torques) at positions
         # Isaac Lab views generally have one of the following:
         #   rigid_view.apply_forces_at_positions(forces, positions, env_ids, is_global=True)
         #   rigid_view.apply_forces(forces, env_ids, is_global=True)  # at COM
         # Choose the “at positions” variant to create the proper moments automatically.
-        rigid_view.apply_forces_at_positions(
-            forces=world_forces,
-            positions=world_points,
-            env_ids=env_ids,
-            is_global=True,
-        )
+        
 
         
