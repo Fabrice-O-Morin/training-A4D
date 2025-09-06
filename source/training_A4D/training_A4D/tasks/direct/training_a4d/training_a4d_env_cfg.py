@@ -61,17 +61,17 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
     # --------------------------------------------------------------------------------------
 
     A4_RIGID_CFG = RigidObjectCfg(
-        prim_path = "{ENV_REGEX_NS}/A4",
+        #prim_path = "/{ENV_REGEX_NS}/A4",
+        prim_path = "/World/envs/env_0/A4",
         spawn = sim_utils.UsdFileCfg(
-            usd_path = f"/home/fom/Documents/ISAAC5/AASSEM4D_with_joints.usda",
-            rigid_props = sim_utils.RigidBodyPropertiesCfg(
-                disable_gravity = False,
-                max_depenetration_velocity = 10.0,
-                enable_gyroscopic_forces = True,
-            ),
-            # note: no articulation_props here — we’re not using an articulation
+            usd_path = f"/home/fom/Documents/ISAAC5/ASSEM4D_with_joints.usda",
             copy_from_source=False,
         ),
+        #rigid_props = { ".*": sim_utils.RigidBodyPropertiesCfg(
+        #        disable_gravity = False,
+        #        max_depenetration_velocity = 10.0,
+        #        enable_gyroscopic_forces = True,
+        #        )},
         init_state=RigidObjectCfg.InitialStateCfg(
             pos=(0.0, 0.0, 0.5),    # start 0.5 m above ground
             rot=(0.0, 0.0, 0.0, 1.0),  # identity quaternion (x,y,z,w)
@@ -79,6 +79,8 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
             #joint_vel=(0.0, 0.0)
         ),
     )
+
+    RIGID_OBJECTS = [A4_RIGID_CFG ]
 
     # terrain / ground properties
     terrain = TerrainImporterCfg(
