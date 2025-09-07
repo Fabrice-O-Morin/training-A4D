@@ -23,7 +23,7 @@ from isaaclab.markers import VisualizationMarkers
 #from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 
 #from isaaclab.utils import configclass
-from isaaclab.utils.math import sample_uniform
+from isaaclab.utils.math import subtract_frame_transforms #, sample_uniform
 #from isaaclab.assets import RigidObjectView
 #from isaaclab.envs.mdp.terrains import TerrainImporterCfg
 #from isaaclab.terrains import TerrainImporterCfg
@@ -79,28 +79,31 @@ class TrainingA4dEnv(DirectRLEnv):
             self.scene = InteractiveScene(self.cfg.scene)
             self._setup_scene()
         """
+        print(f"\n\nENTERING _SETUP_SCENE\n\n")
+
+        self.stage = omni.usd.get_context().get_stage()
+
 
         # add ground plane (if it does not exist in the scene)
         #spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
+
 
         # Add terrain
         #self.terrain = self.scene.add(self.cfg.terrain)
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
-
-        # clone and replicate
-        #self.scene.clone_environments()#,copy_from_source=False)
-        #print("Namespace after cloning:", self.scene.env_ns)  # should be like /World/envs/env_0
         
-        self.stage = omni.usd.get_context().get_stage()
         
         # Add articulation to scene 
         self._agent = Articulation(cfg=self.cfg.A4_RIGID_CFG)
         self.scene.articulations["Agent"] = self._agent
-        print(f"\n\nScene attribute articulations = {self.scene.articulations}")
-        #self.print_hierarchy(self.stage.GetPseudoRoot())
         
+        
+        # clone and replicate
+        self.scene.clone_environments(copy_from_source=False)
+        #print("Namespace after cloning:", self.scene.env_ns)  # should be like /World/envs/env_0
+        #self.print_hierarchy(self.stage.GetPseudoRoot())
 
         # we need to explicitly filter collisions for CPU simulation
         if self.device == "cpu":
@@ -131,9 +134,9 @@ class TrainingA4dEnv(DirectRLEnv):
 
         # collect the prims where forces will be applied
         self.drone_bodies = [prim for prim in self.stage.Traverse() if "tn__MODELSimpleDrone11_sQI" in str(prim.GetName())] # List of drone bodies in agent A4
-        print("\n\nDrone bodies:", [rb.GetPath() for rb in self.drone_bodies], f"\n \n \n")
-        # TO-DO: move this after the cloning, otherwise useless
-
+        print("\n\nDrone bodies:", [rb.GetPath() for rb in self.drone_bodies], f"\n \n")
+        
+        print(f"\n\nEND SETUP_SCENE\n\n\n")
 
 
 
@@ -193,6 +196,7 @@ class TrainingA4dEnv(DirectRLEnv):
             actions: The actions to apply on the environment. Shape is (num_envs, action_dim).
         """
         self.actions = actions.clone()
+        #self._actions = actions.clone().clamp(-1.0, 1.0)
         #self._thrust[:, 0, 2] = self.cfg.thrust_to_weight * self._agent_weight * (self._actions[:, 0] + 1.0) / 2.0
         #self._moment[:, 0, :] = self.cfg.moment_scale * self._actions[:, 1:]
 
@@ -285,7 +289,8 @@ class TrainingA4dEnv(DirectRLEnv):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._agent._ALL_INDICES
 
-        # Logging
+
+        # Logging the results of the previous episode
         final_distance_to_goal = torch.linalg.norm(
             self._desired_pos_w[env_ids] - self._agent.data.root_pos_w[env_ids], dim=1
         ).mean()
@@ -302,25 +307,33 @@ class TrainingA4dEnv(DirectRLEnv):
         extras["Metrics/final_distance_to_goal"] = final_distance_to_goal.item()
         self.extras["log"].update(extras)
 
+
+        # use reset methods
         self._agent.reset(env_ids)
         super()._reset_idx(env_ids)
         if len(env_ids) == self.num_envs:
             # Spread out the resets to avoid spikes in training when many environments reset at a similar time
             self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
 
+
+        # Now (re-)initialize task-specific parameters
         self._actions[env_ids] = 0.0
         # Sample new commands
         self._desired_pos_w[env_ids, :2] = torch.zeros_like(self._desired_pos_w[env_ids, :2]).uniform_(-2.0, 2.0)
         self._desired_pos_w[env_ids, :2] += self._terrain.env_origins[env_ids, :2]
         self._desired_pos_w[env_ids, 2] = torch.zeros_like(self._desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
-        # Reset robot state
+        
+        # Reset agent state
+        # joints
         joint_pos = self._agent.data.default_joint_pos[env_ids]
         joint_vel = self._agent.data.default_joint_vel[env_ids]
+        self._agent.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+        # articulation root
         default_root_state = self._agent.data.default_root_state[env_ids]
         default_root_state[:, :3] += self._terrain.env_origins[env_ids]
         self._agent.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
         self._agent.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
-        self._agent.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+        
 
 
         

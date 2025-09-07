@@ -61,8 +61,9 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
     # --------------------------------------------------------------------------------------
 
     A4_RIGID_CFG = ArticulationCfg(
-        #prim_path = "/{ENV_REGEX_NS}/A4",
-        prim_path = "/World/envs/env_0/A4",
+        #prim_path = "{ENV_REGEX_NS}/A4",
+        prim_path = "/World/envs/env_.*/A4",
+        #prim_path = "/World/envs/env_0/A4",
         spawn = sim_utils.UsdFileCfg(
             usd_path = f"/home/fom/Documents/ISAAC5/ASSEM4Dv2.usda",
             copy_from_source=False,
