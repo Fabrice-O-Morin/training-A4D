@@ -90,8 +90,8 @@ class TrainingA4dEnv(DirectRLEnv):
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
 
         # clone and replicate
-        self.scene.clone_environments()#,copy_from_source=False)
-        print("Namespace after cloning:", self.scene.env_ns)  # should be like /World/envs/env_0
+        #self.scene.clone_environments()#,copy_from_source=False)
+        #print("Namespace after cloning:", self.scene.env_ns)  # should be like /World/envs/env_0
         
         self.stage = omni.usd.get_context().get_stage()
         

@@ -3,8 +3,8 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-#from isaaclab.assets import ArticulationCfg
-from isaaclab.assets import RigidObjectCfg
+from isaaclab.assets import ArticulationCfg
+from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
@@ -60,27 +60,34 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
     # Configuration: spawn as ONE rigid body (no joints/articulation)
     # --------------------------------------------------------------------------------------
 
-    A4_RIGID_CFG = RigidObjectCfg(
+    A4_RIGID_CFG = ArticulationCfg(
         #prim_path = "/{ENV_REGEX_NS}/A4",
-        prim_path = "/World/envs/env_0/A4",
+        prim_path = "/World/envs/env_0/A4/ASSEM4D",
         spawn = sim_utils.UsdFileCfg(
             usd_path = f"/home/fom/Documents/ISAAC5/ASSEM4D_with_joints.usda",
             copy_from_source=False,
         ),
+        actuators={
+        "dummy": ImplicitActuatorCfg(
+            joint_names_expr=[".*"],  # apply to all joints
+            stiffness=0.0,            # no spring-like behavior
+            damping=0.0,              # no damping either
+            )
+        },
         #rigid_props = { ".*": sim_utils.RigidBodyPropertiesCfg(
         #        disable_gravity = False,
         #        max_depenetration_velocity = 10.0,
         #        enable_gyroscopic_forces = True,
         #        )},
-        init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.5),    # start 0.5 m above ground
+        init_state=ArticulationCfg.InitialStateCfg(
+            pos=(0.0, 0.0, 0.5),        # start 0.5 m above ground
             rot=(0.0, 0.0, 0.0, 1.0),  # identity quaternion (x,y,z,w)
-            #joint_pos=(0.0, 0.0),
-            #joint_vel=(0.0, 0.0)
+            joint_pos=(0.0, 0.0),
+            joint_vel=(0.0, 0.0)
         ),
     )
 
-    RIGID_OBJECTS = [A4_RIGID_CFG ]
+    ARTICULATIONS = [A4_RIGID_CFG ]
 
     # terrain / ground properties
     terrain = TerrainImporterCfg(
@@ -99,10 +106,12 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
 
     
     # scene
+    # See the meaning of the args here: https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.scene.html#isaaclab.scene.InteractiveSceneCfg
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=16, 
                                                      env_spacing=3.0, 
-                                                     clone_in_fabric=True,
-                                                     replicate_physics=True
+                                                     clone_in_fabric=False,
+                                                     replicate_physics=True, 
+                                                     filter_collisions=True
                                                      )
 
 
