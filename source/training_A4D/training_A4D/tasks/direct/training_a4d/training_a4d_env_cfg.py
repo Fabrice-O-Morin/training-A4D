@@ -62,9 +62,9 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
 
     A4_RIGID_CFG = ArticulationCfg(
         #prim_path = "/{ENV_REGEX_NS}/A4",
-        prim_path = "/World/envs/env_0/A4/ASSEM4D",
+        prim_path = "/World/envs/env_0/A4",
         spawn = sim_utils.UsdFileCfg(
-            usd_path = f"/home/fom/Documents/ISAAC5/ASSEM4D_with_joints.usda",
+            usd_path = f"/home/fom/Documents/ISAAC5/ASSEM4Dv2.usda",
             copy_from_source=False,
         ),
         actuators={
@@ -82,9 +82,11 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
         init_state=ArticulationCfg.InitialStateCfg(
             pos=(0.0, 0.0, 0.5),        # start 0.5 m above ground
             rot=(0.0, 0.0, 0.0, 1.0),  # identity quaternion (x,y,z,w)
-            joint_pos=(0.0, 0.0),
-            joint_vel=(0.0, 0.0)
-        ),
+            joint_pos={"Axle_to_holder": 0.0, "Axle_to_drone_block": 0.0},
+            #joint_vel,
+            #lin_vel,
+            #ang_vel,
+        ), # see: https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.assets.html#isaaclab.assets.ArticulationCfg.InitialStateCfg
     )
 
     ARTICULATIONS = [A4_RIGID_CFG ]

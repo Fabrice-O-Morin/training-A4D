@@ -14,7 +14,7 @@ from pxr import Usd, UsdPhysics, PhysxSchema
 from collections.abc import Sequence
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import RigidObject#, Articulation, ArticulationCfg
+from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.envs import DirectRLEnv
 #from isaaclab.envs.ui import BaseEnvWindow
 from isaaclab.markers import VisualizationMarkers
@@ -95,45 +95,46 @@ class TrainingA4dEnv(DirectRLEnv):
         
         self.stage = omni.usd.get_context().get_stage()
         
-        # Add objects after cloning so that is initialized 
-        
-        self._agent = RigidObject(cfg=self.cfg.A4_RIGID_CFG)
-        self.scene.rigid_objects["Agent"] = self._agent
-        #self.scene.register(agent)
-        print(f"Scene attribute rigid_objects = {self.scene.rigid_objects}")
-        self.print_hierarchy(self.stage.GetPseudoRoot())
+        # Add articulation to scene 
+        self._agent = Articulation(cfg=self.cfg.A4_RIGID_CFG)
+        self.scene.articulations["Agent"] = self._agent
+        print(f"\n\nScene attribute articulations = {self.scene.articulations}")
+        #self.print_hierarchy(self.stage.GetPseudoRoot())
         
 
         # we need to explicitly filter collisions for CPU simulation
         if self.device == "cpu":
             self.scene.filter_collisions(global_prim_paths=[])
 
-        # add articulation to scene
-        # self.scene.articulations["robot"] = self.robot
 
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-        A4_path = "World/envs/env_0/A4" #self.cfg.A4_RIGID_CFG.prim_path #"{ENV_REGEX_NS}/A4"
+        A4_path = "/World/envs/env_0/A4" #self.cfg.A4_RIGID_CFG.prim_path #"{ENV_REGEX_NS}/A4"
         rigid_bodies = []    # List of rigid bodies in agent A4
         total_mass = 0.0
         for prim in self.stage.Traverse():
-            if prim.HasAPI(UsdPhysics.RigidBodyAPI):
-                if str(prim.GetPath()).startswith(A4_path): 
+            if str(prim.GetPath()).startswith(A4_path): 
+                #print(f"prim_path = {str(prim.GetPath())}\nStarts with A4? {str(prim.GetPath()).startswith(A4_path)}")
+                #print(f"\n{prim}   has applied schemas {prim.GetAppliedSchemas()}")
+                #print(f"prim.HasAPI(UsdPhysics.RigidBodyAPI) is {prim.HasAPI(UsdPhysics.RigidBodyAPI)}")
+                if prim.HasAPI(UsdPhysics.RigidBodyAPI):
                     rigid_bodies.append(prim)
+                if prim.HasAPI(UsdPhysics.MassAPI):
                     mass_api = UsdPhysics.MassAPI(prim)
                     mass_attr = mass_api.GetMassAttr()
-                    if mass_attr.HasAuthoredValue(): total_mass += mass_attr.Get()
-        print("Rigid bodies:", [rb.GetPath() for rb in rigid_bodies])
+                    if mass_attr.HasAuthoredValue(): total_mass += mass_attr.Get()                    
+        print(  f"\nRigid bodies:\n"  +  "".join([f"{rb.GetPath()}\n" for rb in rigid_bodies])  )
         self._total_mass = total_mass
-        print(f"self._total_mass = ", total_mass)
+        print(f"\nself._total_mass = ", total_mass)
 
-        self.drone_bodies = [prim for prim in self.stage.Traverse() if prim.GetName() == "tn__MODELSimpleDrone11_sQI"] # List of drone bodies in agent A4
-        print("Drone bodies:", [rb.GetPath() for rb in self.drone_bodies])
+        # collect the prims where forces will be applied
+        self.drone_bodies = [prim for prim in self.stage.Traverse() if "tn__MODELSimpleDrone11_sQI" in str(prim.GetName())] # List of drone bodies in agent A4
+        print("\n\nDrone bodies:", [rb.GetPath() for rb in self.drone_bodies], f"\n \n \n")
+        # TO-DO: move this after the cloning, otherwise useless
 
-        #self.scene.write_data_to_sim()
-        
+
 
 
 
@@ -158,7 +159,11 @@ class TrainingA4dEnv(DirectRLEnv):
 
 
 
-
+    def print_stage_traverse(self):
+        print(f"\n\n\nSTAGE TRAVERSE\n")
+        for prim in self.stage.Traverse():
+            print("Prim:", prim.GetPath(), "Type:", prim.GetTypeName())
+        print(f"END STAGE TRAVERSE\n \n \n")
 
 
     
@@ -188,7 +193,7 @@ class TrainingA4dEnv(DirectRLEnv):
             actions: The actions to apply on the environment. Shape is (num_envs, action_dim).
         """
         self.actions = actions.clone()
-        #self._thrust[:, 0, 2] = self.cfg.thrust_to_weight * self._robot_weight * (self._actions[:, 0] + 1.0) / 2.0
+        #self._thrust[:, 0, 2] = self.cfg.thrust_to_weight * self._agent_weight * (self._actions[:, 0] + 1.0) / 2.0
         #self._moment[:, 0, :] = self.cfg.moment_scale * self._actions[:, 1:]
 
 
@@ -197,7 +202,7 @@ class TrainingA4dEnv(DirectRLEnv):
         This function is responsible for applying the actions to the simulator. It is called at each
         physics time-step.
         """
-        #self._robot.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
+        #self._agent.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
         self.control.apply_forces( 
             self.drone_bodies,    # ?
             motor_cmds01, # Sequence[Sequence[float]]                   # TO-DO
@@ -213,13 +218,13 @@ class TrainingA4dEnv(DirectRLEnv):
             The observations for the environment.
         """
         desired_pos_b, _ = subtract_frame_transforms(
-            self._robot.data.root_pos_w, self._robot.data.root_quat_w, self._desired_pos_w
+            self._agent.data.root_pos_w, self._agent.data.root_quat_w, self._desired_pos_w
         )
         obs = torch.cat(
             [
-                self._robot.data.root_lin_vel_b,
-                self._robot.data.root_ang_vel_b,
-                self._robot.data.projected_gravity_b,
+                self._agent.data.root_lin_vel_b,
+                self._agent.data.root_ang_vel_b,
+                self._agent.data.projected_gravity_b,
                 desired_pos_b,
             ],
             dim=-1,
@@ -234,9 +239,9 @@ class TrainingA4dEnv(DirectRLEnv):
         Returns:
             The rewards for the environment. Shape is (num_envs,).
         """
-        lin_vel = torch.sum(torch.square(self._robot.data.root_lin_vel_b), dim=1)
-        ang_vel = torch.sum(torch.square(self._robot.data.root_ang_vel_b), dim=1)
-        distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
+        lin_vel = torch.sum(torch.square(self._agent.data.root_lin_vel_b), dim=1)
+        ang_vel = torch.sum(torch.square(self._agent.data.root_ang_vel_b), dim=1)
+        distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._agent.data.root_pos_w, dim=1)
         distance_to_goal_mapped = 1 - torch.tanh(distance_to_goal / 0.8)
         rewards = {
             "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
@@ -253,7 +258,7 @@ class TrainingA4dEnv(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        died = torch.logical_or(self._robot.data.root_pos_w[:, 2] < 0.1, self._robot.data.root_pos_w[:, 2] > 2.0)
+        died = torch.logical_or(self._agent.data.root_pos_w[:, 2] < 0.1, self._agent.data.root_pos_w[:, 2] > 2.0)
         return died, time_out
 
 
@@ -264,25 +269,25 @@ class TrainingA4dEnv(DirectRLEnv):
         Args:
             env_ids: List of environment ids which must be reset
         """
-
-        self.print_hierarchy(self.stage.GetPseudoRoot())
+        print(f"\n\n\nRESETTING")
+        #self.print_hierarchy(self.stage.GetPseudoRoot())
 
         # Set collision filtering
-        for env_id in env_ids:
-            prim_path = f"/World/envs/env_{env_id}/A4"
-            prim = self.stage.GetPrimAtPath(prim_path)
-            # Apply PhysX API
-            rb_api = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
-            rb_api.CreateCollisionGroupAttr().Set(env_id)
-            rb_api.CreateCollisionMaskAttr().Set(1 << env_id)
+        #for env_id in env_ids:
+        #    prim_path = f"/World/envs/env_{env_id}/A4"
+        #    prim = self.stage.GetPrimAtPath(prim_path)
+        #    # Apply PhysX API
+        #    rb_api = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
+        #    rb_api.CreateCollisionGroupAttr().Set(env_id)
+        #    rb_api.CreateCollisionMaskAttr().Set(1 << env_id)
 
 
         if env_ids is None or len(env_ids) == self.num_envs:
-            env_ids = self._robot._ALL_INDICES
+            env_ids = self._agent._ALL_INDICES
 
         # Logging
         final_distance_to_goal = torch.linalg.norm(
-            self._desired_pos_w[env_ids] - self._robot.data.root_pos_w[env_ids], dim=1
+            self._desired_pos_w[env_ids] - self._agent.data.root_pos_w[env_ids], dim=1
         ).mean()
         extras = dict()
         for key in self._episode_sums.keys():
@@ -297,7 +302,7 @@ class TrainingA4dEnv(DirectRLEnv):
         extras["Metrics/final_distance_to_goal"] = final_distance_to_goal.item()
         self.extras["log"].update(extras)
 
-        self._robot.reset(env_ids)
+        self._agent.reset(env_ids)
         super()._reset_idx(env_ids)
         if len(env_ids) == self.num_envs:
             # Spread out the resets to avoid spikes in training when many environments reset at a similar time
@@ -309,13 +314,13 @@ class TrainingA4dEnv(DirectRLEnv):
         self._desired_pos_w[env_ids, :2] += self._terrain.env_origins[env_ids, :2]
         self._desired_pos_w[env_ids, 2] = torch.zeros_like(self._desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
         # Reset robot state
-        joint_pos = self._robot.data.default_joint_pos[env_ids]
-        joint_vel = self._robot.data.default_joint_vel[env_ids]
-        default_root_state = self._robot.data.default_root_state[env_ids]
+        joint_pos = self._agent.data.default_joint_pos[env_ids]
+        joint_vel = self._agent.data.default_joint_vel[env_ids]
+        default_root_state = self._agent.data.default_root_state[env_ids]
         default_root_state[:, :3] += self._terrain.env_origins[env_ids]
-        self._robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
-        self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
-        self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+        self._agent.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
+        self._agent.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
+        self._agent.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
 
         
