@@ -4,14 +4,15 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 from __future__ import annotations
+from collections.abc import Sequence
 
 import math
 import gymnasium as gym
 import torch
-import omni
-from pxr import Usd, UsdPhysics, PhysxSchema
 
-from collections.abc import Sequence
+import omni
+import omni.isaac.dynamic_control as dc
+from pxr import Usd, UsdPhysics, PhysxSchema
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
@@ -21,13 +22,15 @@ from isaaclab.markers import VisualizationMarkers
 #from isaaclab.scene import InteractiveSceneCfg
 #from isaaclab.sim import SimulationCfg
 #from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-
 #from isaaclab.utils import configclass
 from isaaclab.utils.math import subtract_frame_transforms #, sample_uniform
 #from isaaclab.assets import RigidObjectView
 #from isaaclab.envs.mdp.terrains import TerrainImporterCfg
 #from isaaclab.terrains import TerrainImporterCfg
+
 from .training_a4d_env_cfg import TrainingA4dEnvCfg
+
+
 
 
 class TrainingA4dEnv(DirectRLEnv):
@@ -95,27 +98,36 @@ class TrainingA4dEnv(DirectRLEnv):
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
         
         
-        # Add articulation to scene 
-        self._agent = Articulation(cfg=self.cfg.A4_RIGID_CFG)
-        self.scene.articulations["Agent"] = self._agent
-        
+        # Add articulation to scene if it is to be cloned
+        #self._agent = Articulation(cfg=self.cfg.A4_RIGID_CFG)
+        #self.scene.articulations["Agent"] = self._agent
         
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
         #print("Namespace after cloning:", self.scene.env_ns)  # should be like /World/envs/env_0
-        #self.print_hierarchy(self.stage.GetPseudoRoot())
+        
+
+        # Add articulations to scene manually into the various envs
+        self.scene.articulations[f"Agents"] = []
+        for i in range(self.num_envs):
+            agent = Articulation(cfg=self.cfg.A4_RIGID_CFG.replace(prim_path = f"/World/envs/env_{i}/A4"))
+            self.scene.articulations[f"Agents"].append(agent)
 
         # we need to explicitly filter collisions for CPU simulation
         if self.device == "cpu":
             self.scene.filter_collisions(global_prim_paths=[])
 
+        # Verification
+        self.print_hierarchy(self.stage.GetPseudoRoot())
 
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-        A4_path = "/World/envs/env_0/A4" #self.cfg.A4_RIGID_CFG.prim_path #"{ENV_REGEX_NS}/A4"
-        rigid_bodies = []    # List of rigid bodies in agent A4
+
+        # List of rigid bodies in one agent A4
+        A4_path = "/World/envs/env_0/A4/ASSEM4D_with_joints" #self.cfg.A4_RIGID_CFG.prim_path #"{ENV_REGEX_NS}"
+        self.rigid_bodies = []    # List of rigid bodies in agent A4
         total_mass = 0.0
         for prim in self.stage.Traverse():
             if str(prim.GetPath()).startswith(A4_path): 
@@ -123,18 +135,41 @@ class TrainingA4dEnv(DirectRLEnv):
                 #print(f"\n{prim}   has applied schemas {prim.GetAppliedSchemas()}")
                 #print(f"prim.HasAPI(UsdPhysics.RigidBodyAPI) is {prim.HasAPI(UsdPhysics.RigidBodyAPI)}")
                 if prim.HasAPI(UsdPhysics.RigidBodyAPI):
-                    rigid_bodies.append(prim)
+                    self.rigid_bodies.append(prim)
                 if prim.HasAPI(UsdPhysics.MassAPI):
                     mass_api = UsdPhysics.MassAPI(prim)
                     mass_attr = mass_api.GetMassAttr()
                     if mass_attr.HasAuthoredValue(): total_mass += mass_attr.Get()                    
-        print(  f"\nRigid bodies:\n"  +  "".join([f"{rb.GetPath()}\n" for rb in rigid_bodies])  )
+        print(  f"\nRigid bodies:\n"  +  "".join([f"{rb.GetPath()}\n" for rb in self.rigid_bodies])  )
         self._total_mass = total_mass
         print(f"\nself._total_mass = ", total_mass)
 
+        
+        # List of joints in agent A4
+        self.joints = []    
+        for prim in self.stage.Traverse():
+            if str(prim.GetPath()).startswith(A4_path): 
+                if UsdPhysics.Joint(prim):
+                    self.joints.append(prim)                  
+        print(  f"\nRigid bodies:\n"  +  "".join([f"{rb.GetPath()}\n" for rb in self.joints])  )
+ 
+
+        self.dci = dc._dynamic_control.acquire_dynamic_control_interface()
         # collect the prims where forces will be applied
-        self.drone_bodies = [prim for prim in self.stage.Traverse() if "tn__MODELSimpleDrone11_sQI" in str(prim.GetName())] # List of drone bodies in agent A4
-        print("\n\nDrone bodies:", [rb.GetPath() for rb in self.drone_bodies], f"\n \n")
+        nam1 = "tn__MODELSimpleDrone11_sQI" #"tn__Drone_body_with_flangesAssem4d1_ik0xp0"
+        #nam0 = "/World/envs/env_.*/A4/ASSEM4D_with_joints/ASSEM4D/"
+        self.drone_bodies_prims = [prim for prim in self.stage.Traverse() 
+                             if ( (nam1 == str(prim.GetName())) and (prim.HasAPI(UsdPhysics.RigidBodyAPI)) ) ] # List of drone bodies in agent A4
+        print("\n\nDrone bodies as prims:\n", "".join([f"{str(prim.GetPath())}\n" for prim in self.drone_bodies_prims]), f"\n")
+
+        #for prim in self.drone_bodies_prims:
+        #    print(f"{self.get_articulation_root(prim)} has art_root?  ", self.get_articulation_root(prim).HasAPI(UsdPhysics.ArticulationRootAPI))
+        
+        #self.drone_bodies_articulations = [self.dci.get_articulation(str(self.get_articulation_root(prim).GetPath()))  
+        #                              for prim in self.drone_bodies_prims]
+        print(f"SANITY CHECK:   ", self.dci.get_rigid_body(str(self.drone_bodies_prims[2].GetPath())))
+        #self.drone_handles = 
+        #print("\n\nDrone articulations handles:", self.drone_bodies_articulations, f"\n \n")
         
         print(f"\n\nEND SETUP_SCENE\n\n\n")
 
@@ -169,7 +204,17 @@ class TrainingA4dEnv(DirectRLEnv):
         print(f"END STAGE TRAVERSE\n \n \n")
 
 
+
+    def get_articulation_root(self,link_prim):
+        prim = link_prim
+        while prim:
+            if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+                return prim
+            prim = prim.GetParent()
+        return None
+
     
+
     def get_all_descendants(self,prim):
         descendants = []
         for child in prim.GetChildren():
@@ -208,8 +253,9 @@ class TrainingA4dEnv(DirectRLEnv):
         """
         #self._agent.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
         self.control.apply_forces( 
-            self.drone_bodies,    # ?
-            motor_cmds01, # Sequence[Sequence[float]]                   # TO-DO
+            self.drone_handles, 
+            self.dci,    # ?
+            self.actions, # Sequence[Sequence[float]]                   # TO-DO
             add_reaction_torque = True
             )
         
@@ -278,7 +324,7 @@ class TrainingA4dEnv(DirectRLEnv):
 
         # Set collision filtering
         #for env_id in env_ids:
-        #    prim_path = f"/World/envs/env_{env_id}/A4"
+        #    prim_path = f"/World/envs/env_{env_id}"
         #    prim = self.stage.GetPrimAtPath(prim_path)
         #    # Apply PhysX API
         #    rb_api = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)

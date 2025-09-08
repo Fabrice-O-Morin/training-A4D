@@ -33,6 +33,20 @@ from .A4_contoller_cfg import A4ForcesController
 #                    # add command manager visualization
 #                    self._create_debug_vis_ui_element("targets", self.env)
 
+@configclass
+class TrainingA4dSceneCfg(InteractiveSceneCfg):
+    
+    # scene
+    # See the meaning of the args here: https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.scene.html#isaaclab.scene.InteractiveSceneCfg
+    num_envs=16 
+    env_spacing=3.0 
+    clone_in_fabric=False
+    replicate_physics=True 
+    filter_collisions=True
+
+    
+
+   
 
 
 
@@ -47,23 +61,12 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
     observation_space = 12
     state_space = 0
 
-
-    # simulation
-    sim: SimulationCfg = SimulationCfg(dt = 1/100, 
-                                       device = "cuda:0",
-                                       render_interval = decimation
-                                       )
-
-    # robot(s) / agent(s)
-    #robot_cfg: ArticulationCfg = CARTPOLE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
-    # --------------------------------------------------------------------------------------
-    # Configuration: spawn as ONE rigid body (no joints/articulation)
-    # --------------------------------------------------------------------------------------
+    scene = TrainingA4dSceneCfg()
 
     A4_RIGID_CFG = ArticulationCfg(
         #prim_path = "{ENV_REGEX_NS}/A4",
         prim_path = "/World/envs/env_.*/A4",
-        #prim_path = "/World/envs/env_0/A4",
+        #prim_path = "/World/envs/env_0",
         spawn = sim_utils.UsdFileCfg(
             usd_path = f"/home/fom/Documents/ISAAC5/ASSEM4Dv2.usda",
             copy_from_source=False,
@@ -90,9 +93,18 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
         ), # see: https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.assets.html#isaaclab.assets.ArticulationCfg.InitialStateCfg
     )
 
-    ARTICULATIONS = [A4_RIGID_CFG ]
+    ARTICULATIONS = [A4_RIGID_CFG]
 
-    # terrain / ground properties
+
+
+     # simulation
+    sim: SimulationCfg = SimulationCfg(dt = 1/100, 
+                                       device = "cuda:0",
+                                       render_interval = decimation
+                                       )
+   
+
+   # terrain / ground properties
     terrain = TerrainImporterCfg(
         prim_path="/World/GroundPlane",
         terrain_type="plane",
@@ -107,23 +119,12 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
         debug_vis=False,
     )
 
-    
-    # scene
-    # See the meaning of the args here: https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.scene.html#isaaclab.scene.InteractiveSceneCfg
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=16, 
-                                                     env_spacing=3.0, 
-                                                     clone_in_fabric=False,
-                                                     replicate_physics=True, 
-                                                     filter_collisions=True
-                                                     )
-
-
     # custom parameters/scales
     thrust_to_weight = 1.9
     moment_scale = 0.01
     # - controllable joint
     holder_dof_name = "axle_to_holder"
-    drone_dof_name = "axle_to_drone"
+    drone_dof_name  = "axle_to_drone"
     # - action scale
     action_scale = 100.0  # [N]
     # - reward scales

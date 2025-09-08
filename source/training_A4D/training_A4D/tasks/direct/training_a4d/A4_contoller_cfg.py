@@ -1,10 +1,9 @@
 
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Rigid-body A4 (no articulation)."""
 
 from __future__ import annotations
-
+import torch
 import math
 import numpy as np
 from dataclasses import dataclass
@@ -14,7 +13,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import RigidObjectCfg #, RigidPrimView
 #from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 import omni
-from pxr import UsdGeom, PhysxSchema, Gf
+from pxr import UsdGeom, PhysxSchema, UsdPhysics
 from scipy.spatial.transform import Rotation
 
 
@@ -75,6 +74,7 @@ class A4ForcesController:
     def apply_forces(
         self,
         drones,
+        dci,
         motor_cmds01: Sequence[Sequence[float]],
         add_reaction_torque: bool = True,
         ):
@@ -90,13 +90,14 @@ class A4ForcesController:
         xform = [UsdGeom.Xformable(p) for p in drones]
         world_transform = [xformi.ComputeLocalToWorldTransform(0.0) for xformi in xform]
         world_pos  = [wt.ExtractTranslation() for wt in world_transform]
-        world_quat = [wt.ExtractRotationQuat() for wt in world_transform]
-
+        world_quat_temp = [wt.ExtractRotationQuat() for wt in world_transform]
+        world_quat = [np.array([w.GetReal(), *w.GetImaginary()]) for w in world_quat_temp]
+        print(world_quat)
         # Expect array/tensor shapes: (N, 3) and (N, 4)
         # Convert quat to rotation matrices; Isaac Lab usually offers a helper in math utils.
         # If not, implement a small quat->R; here we assume a helper quat_to_matrix exists:
         
-        R = Rotation.from_quat(world_quat)  # (N, 3, 3)
+        R = Rotation.from_quat(world_quat, scalar_first=True)  # (N, 3, 3)
 
         N = len(drones)
         # Precompute world-space application points and forces
@@ -110,7 +111,7 @@ class A4ForcesController:
         for i in range(N):
             drone = drones[i]
             # Attach PhysX API wrapper
-            rb_api = PhysxSchema.PhysxRigidBodyAPI.Apply(drone)  # Apply() ensures it’s active
+            #rb_api = PhysxSchema.PhysxRigidBodyAPI.Apply(drone)  # Apply() ensures it’s active
 
             # Define force and position (world coordinates)
             #force = Gf.Vec3f(0.0, 0.0, 10.0)       # Newtons
@@ -121,21 +122,35 @@ class A4ForcesController:
 
             cmds = motor_cmds01[i]
             # body z-axis (thrust direction) in world frame = Ri @ [0,0,1]
-            thrust_dir_world = Ri @ (0.0, 0.0, 1.0)
+            thrust_dir_world = Ri.apply([0.0, 0.0, 1.0])
+            local_com = dci.get_rigid_body_center_of_mass(drone, local=True) #Center of mass in local coordinates
 
             for m in range(4):
                 # body-frame motor offset -> world position
                 r_b = self._offsets_body[m]
-                r_w = Ri @ r_b  # rotate offset into world
-                p_app = (pi[0] + r_w[0], pi[1] + r_w[1], pi[2] + r_w[2])
+                r_w = Ri.apply(r_b)  # rotate offset into world
+                p_app = torch.tensor([pi[0] + r_w[0], pi[1] + r_w[1], pi[2] + r_w[2]])
                 # thrust magnitude
                 Fm = self._cmd_to_thrust(cmds[m])
-                F_vec = (thrust_dir_world[0] * Fm,
+                F_vec = torch.tensor([thrust_dir_world[0] * Fm,
                          thrust_dir_world[1] * Fm,
-                         thrust_dir_world[2] * Fm)
+                         thrust_dir_world[2] * Fm])
 
-                # Apply force at position
-                rb_api.GetApplyForceAtPosAttr().Set([(F_vec, p_app)])
+                # Apply force at center of mass
+                dci.apply_force(drone, F_vec)
+                # Determine torque
+                torque = np.cross(p_app - local_com, F_vec)
+                dci.apply_torque(drone, torque)
+
+                #rb_api.ApplyForceAtPos().Set([(F_vec, p_app)])
+
+                #if drone.HasAPI(UsdPhysics.RigidBodyAPI):
+                #    rigid_body_api = UsdPhysics.RigidBodyAPI(drone)
+                #    print("\nRigid body API exists:", rigid_body_api, "\n")
+                #else:
+                #    print("No RigidBodyAPI found on this prim")
+                #rigid_body_api.set_external_force_and_torque(F_vec, torch.zeros(0,3), p_app)
+                ## see: https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.assets.html#isaaclab.assets.RigidObject.set_external_force_and_torque
 
                 world_points.append(p_app)
                 world_forces.append(F_vec)
@@ -162,7 +177,7 @@ class A4ForcesController:
                     F2 = -F1
 
                     # Apply force at position
-                    rb_api.GetApplyForceAtPosAttr().Set([(F1, p1), (F2, p2)])
+                    rb_api.ApplyForceAtPos().Set([(F1, p1), (F2, p2)])
                     
                     world_points.extend([p1, p2])
                     world_forces.extend([F1, F2])
