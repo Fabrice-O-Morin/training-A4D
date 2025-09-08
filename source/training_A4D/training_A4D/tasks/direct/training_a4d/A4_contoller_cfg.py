@@ -74,7 +74,6 @@ class A4ForcesController:
     def apply_forces(
         self,
         drones,
-        dci,
         motor_cmds01: Sequence[Sequence[float]],
         add_reaction_torque: bool = True,
         ):
@@ -86,7 +85,8 @@ class A4ForcesController:
             motor_cmds01: shape (len(env_ids), 4), normalized [0..1]
             add_reaction_torque: if True, apply yaw torques from rotor drag
         """
-        # 1) Query world poses for the body (positions and orientations)
+        #print("APPLY_FORCES")
+        # Query world poses for the body (positions and orientations)
         xform = [UsdGeom.Xformable(p) for p in drones]
         world_transform = [xformi.ComputeLocalToWorldTransform(0.0) for xformi in xform]
         world_pos  = [wt.ExtractTranslation() for wt in world_transform]
@@ -107,7 +107,7 @@ class A4ForcesController:
 
         # Get the current stage
         #stage = omni.usd.get_context().get_stage()
-
+        print("APPLY_FORCES 2")
         for i in range(N):
             drone = drones[i]
             # Attach PhysX API wrapper
@@ -123,7 +123,7 @@ class A4ForcesController:
             cmds = motor_cmds01[i]
             # body z-axis (thrust direction) in world frame = Ri @ [0,0,1]
             thrust_dir_world = Ri.apply([0.0, 0.0, 1.0])
-            local_com = dci.get_rigid_body_center_of_mass(drone, local=True) #Center of mass in local coordinates
+            #local_com = dci.get_rigid_body_center_of_mass(drone, local=True) #Center of mass in local coordinates
 
             for m in range(4):
                 # body-frame motor offset -> world position

@@ -13,7 +13,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.utils import configclass
 from .A4_contoller_cfg import A4ForcesController
 
-
+CUDA = "cuda:0"
 
 #class EnvWindow():
 #    """Window manager for the Quadcopter environment."""
@@ -43,6 +43,7 @@ class TrainingA4dSceneCfg(InteractiveSceneCfg):
     clone_in_fabric=False
     replicate_physics=True 
     filter_collisions=True
+    #device = CUDA
 
     
 
@@ -60,6 +61,7 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
     action_space = 4
     observation_space = 12
     state_space = 0
+    device = CUDA
 
     scene = TrainingA4dSceneCfg()
 
@@ -99,7 +101,7 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
 
      # simulation
     sim: SimulationCfg = SimulationCfg(dt = 1/100, 
-                                       device = "cuda:0",
+                                       device = CUDA,
                                        render_interval = decimation
                                        )
    
