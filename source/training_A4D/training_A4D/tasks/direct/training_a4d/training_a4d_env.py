@@ -98,25 +98,12 @@ class TrainingA4dEnv(DirectRLEnv):
         
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
-        #self.scene.articulations["Agent"] = self._agent
-        #print(type(self.scene.articulations["Agent"]))
-        #print(self.scene.articulations)
 
         # Add articulations to scene manually into the various envs
         self.articulations = []
-        #for i in range(self.num_envs):
-            #agent = Articulation(cfg=self.cfg.A4_RIGID_CFG.replace(prim_path = f"/World/envs/env_{i}/A4"))
-            #self.scene.articulations[f"Agent{i}"] = agent
-            #self.articulations.append(agent)
 
         keys = list(self.scene.articulations.keys())
         print("\n\nAll articulation keys:", keys)
-        #for art in self.scene.articulations.values():
-        #    print("Articulation object:", art)
-        #    if art.data is not None: print("data:", art.data)
-        #    print("data:", art.num_instances)
-        #    print("data:", art.body_names)
-        #    print("data:", art.root_physX.view)
 
         # we need to explicitly filter collisions for CPU simulation
         if self.device == "cpu":
@@ -163,16 +150,11 @@ class TrainingA4dEnv(DirectRLEnv):
                              if ( (nam1 == str(prim.GetName())) and (prim.HasAPI(UsdPhysics.RigidBodyAPI)) ) ] # List of drone bodies in agent A4
         print("\n\nDrone bodies as prims:\n", "".join([f"{str(prim.GetPath())}\n" for prim in self.drone_bodies_prims]), f"\n")
 
-        
-        #self.dci = dc._dynamic_control.acquire_dynamic_control_interface()
-        #print(f"SANITY CHECK:   ", self.dci.get_rigid_body(str(self.drone_bodies_prims[2].GetPath())))
-        #for prim in self.drone_bodies_prims:
-        #    print(f"{self.get_articulation_root(prim)} has art_root?  ", self.get_articulation_root(prim).HasAPI(UsdPhysics.ArticulationRootAPI))
-        #self.drone_bodies_articulations = [self.dci.get_articulation(str(self.get_articulation_root(prim).GetPath()))  
-        #                              for prim in self.drone_bodies_prims]
 
         # Verification of hierarchy
-        self.print_hierarchy(self.stage.GetPseudoRoot())
+        #self.print_hierarchy(self.stage.GetPseudoRoot())
+
+        self.env_ids = torch.arange(self.num_envs, dtype=torch.int64, device=self.device)
 
         print(f"\n\nEND SETUP_SCENE\n\n\n")
 
@@ -257,10 +239,10 @@ class TrainingA4dEnv(DirectRLEnv):
         """
         #self._agent.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
         self.control.apply_forces( 
-            self.drone_bodies_prims, 
+            self.drone_bodies_prims,
             self.scene,
             self.actions, # Sequence[Sequence[float]]                   # TO-DO
-            add_reaction_torque = True
+            add_reaction_torque = False
             )
         
 
@@ -324,10 +306,6 @@ class TrainingA4dEnv(DirectRLEnv):
             env_ids: List of environment ids which must be reset
         """
 
-        one_by_one = False
-
-        #self.print_hierarchy(self.stage.GetPseudoRoot())
-
         # Set collision filtering
         #for env_id in env_ids:
         #    prim_path = f"/World/envs/env_{env_id}"
@@ -340,26 +318,13 @@ class TrainingA4dEnv(DirectRLEnv):
 
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, dtype=torch.int64, device=self.device)
-            env_ids_list = range(self.num_envs)
-        else:
-            env_ids_list = env_ids.tolist()
+            
 
 
         # Logging the results of the previous episode
-        if one_by_one:
-            print("NOPE NOPE\n\n\n")
-            for i in env_ids_list:
-                xform = UsdGeom.Xformable(self.drone_bodies_prims[i])
-                world_tf = xform.ComputeLocalToWorldTransform(0)   # Gf.Matrix4d
-                pos = world_tf.ExtractTranslation()                # Gf.Vec3d(x, y, z)
-                post_tensor = torch.tensor([pos[0], pos[1], pos[2]], dtype=torch.float32, device="cuda:0")
-                #rot = world_tf.ExtractRotationQuat()               # Gf.Quatd(real, i, j, k)
-                final_distance_to_goal = torch.linalg.norm(self._desired_pos_w[i] - post_tensor)
-            final_distance_to_goal /= self.num_envs
-        else:
-            final_distance_to_goal = torch.linalg.norm(
-                self._desired_pos_w[env_ids] - self.agent.data.root_pos_w[env_ids], dim=1
-                ).mean()
+        final_distance_to_goal = torch.linalg.norm(
+            self._desired_pos_w[env_ids] - self.agent.data.root_pos_w[env_ids], dim=1
+            ).mean()
 
         extras = dict()
         for key in self._episode_sums.keys():
@@ -375,14 +340,13 @@ class TrainingA4dEnv(DirectRLEnv):
         extras["Metrics/final_distance_to_goal"] = final_distance_to_goal.item()
         self.extras["log"].update(extras)
 
-        # use reset methods
-        #self.scene.articulations.reset(torch.tensor([i], dtype=torch.int64, device=self.device))
+        
        
-         
-        #super()._reset_idx(env_ids)
 
-        #self.scene.reset(env_ids)
-        self.scene.reset()
+        ### START super()._reset_idx(env_ids)
+        # use reset methods
+        self.scene.reset(env_ids)
+        #self.scene.reset()
 
         # apply events such as randomization for environments that need a reset
         if self.cfg.events:
@@ -396,7 +360,7 @@ class TrainingA4dEnv(DirectRLEnv):
             self._observation_noise_model.reset(env_ids)
         # reset the episode length buffer
         self.episode_length_buf[env_ids] = 0
-        print("END reset method des env_ids\n\n\n")
+        ### END super()._reset_idx(env_ids)
 
 
         # Spread out the resets to avoid spikes in training when many environments reset at a similar time
@@ -412,50 +376,16 @@ class TrainingA4dEnv(DirectRLEnv):
         self._desired_pos_w[env_ids, 2] = torch.zeros_like(self._desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
         
         # Reset agent state
-        if one_by_one:
-            print("NOPE NOPE NOPE\n\n\n\n")
-            One_Dim_env=torch.tensor([0], dtype=torch.long, device="cuda:0") 
-            for i in env_ids:
-                #print(f"GO i={i}")
-                art = self.scene.articulations[f"Agent{i}"]
-                # joints
-                #print(f"joint_pos = {art.data.default_joint_pos}")
-                #print(f"joint_vel = {art.data.default_joint_vel}")
-                joint_pos = art.data.default_joint_pos
-                joint_vel = art.data.default_joint_vel
-                art.write_joint_state_to_sim(joint_pos, 
-                                            joint_vel, 
-                                            joint_ids=None,
-                                            env_ids=One_Dim_env)  
-                # articulation root
-                default_root_state = art.data.default_root_state
-                #print(f"default_root_state[0, :3] is {default_root_state[0, :3]}")
-                #print(f"self._terrain.env_origins[i] is {self._terrain.env_origins[i]}")
-
-                default_root_state[0,:3] += self._terrain.env_origins[i]
-                art.write_root_pose_to_sim(default_root_state[0,:7], env_ids=One_Dim_env)
-                art.write_root_velocity_to_sim(default_root_state[0,7:], env_ids=One_Dim_env)
-                #print(f"DONE i={i}\n")
-        
-        else:
-            art = self.scene.articulations[f"Agent"]
-            
-            # Verification, e.g., of batching
-            #print(f"dict", art.__dict__)
-            #print(f"\ndir(art)\n", dir(art))
-
-            # joints
-            #print(f"joint_pos = {art.data.default_joint_pos}")
-            #print(f"joint_vel = {art.data.default_joint_vel}")
-            joint_pos = art.data.default_joint_pos[env_ids]
-            joint_vel = art.data.default_joint_vel[env_ids]
-            art.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)  
-            
-            # articulation root
-            default_root_state = art.data.default_root_state[env_ids]
-            default_root_state[:,:3] += self._terrain.env_origins[env_ids]
-            art.write_root_pose_to_sim(default_root_state[:,:7], env_ids)
-            art.write_root_velocity_to_sim(default_root_state[:,7:], env_ids)
+        art = self.scene.articulations[f"Agent"]
+        # joints
+        joint_pos = art.data.default_joint_pos[env_ids]
+        joint_vel = art.data.default_joint_vel[env_ids]
+        art.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)  
+        # articulation root
+        default_root_state = art.data.default_root_state[env_ids]
+        default_root_state[:,:3] += self._terrain.env_origins[env_ids]
+        art.write_root_pose_to_sim(default_root_state[:,:7], env_ids)
+        art.write_root_velocity_to_sim(default_root_state[:,7:], env_ids)
 
         print(f"END RESET")
 

@@ -65,12 +65,14 @@ class A4ForcesController:
         self.p = params
         self._offsets_body = self.p.motor_offsets_body()
 
+
     def _cmd_to_thrust(self, u: float) -> float:
-        u = max(0.0, min(1.0, float(u)))  # clamp
+        u = max(0.0, min(1.0, float(u)))  # clamp between 0 and 1
         if self.p.cmd_to_thrust_map == "quadratic_map":
-            return (u * u) * self.p.max_thrust_N
+            return (u * u) * self.p.max_thrust_N  # quadratic model of the thrust value as a function of input
         else:
             return u * self.p.max_thrust_N  # linear mapping
+
 
     def apply_forces(
         self,
@@ -87,7 +89,6 @@ class A4ForcesController:
             motor_cmds01: shape (len(env_ids), 4), normalized [0..1]
             add_reaction_torque: if True, apply yaw torques from rotor drag
         """
-        #print("APPLY_FORCES")
 
         # Query world poses for the body (positions and orientations)
         xform = [UsdGeom.Xformable(p) for p in drones]
@@ -95,112 +96,96 @@ class A4ForcesController:
         world_pos  = [wt.ExtractTranslation() for wt in world_transform]
         world_quat_temp = [wt.ExtractRotationQuat() for wt in world_transform]
         world_quat = [np.array([w.GetReal(), *w.GetImaginary()]) for w in world_quat_temp]
-        print(world_quat)
-        
-        # Expect array/tensor shapes: (N, 3) and (N, 4)
-        # Convert quat to rotation matrices; Isaac Lab usually offers a helper in math utils.
-        # If not, implement a small quat->R; here we assume a helper quat_to_matrix exists:
         
         R = Rotation.from_quat(world_quat, scalar_first=True)  # (N, 3, 3)
 
-        N = len(drones)
         # Precompute world-space application points and forces
         world_points = []
         world_forces = []
-        #world_torques = [] if add_reaction_torque else None
+        #world_torques = [] 
 
-        # Get the current stage
-        #stage = omni.usd.get_context().get_stage()
 
-        one_by_one = False
-        print("APPLY_FORCES 2")
-        if one_by_one:
-            for i in range(N):
-                drone = drones[i]
-                art = scene.articulations[f"Agent{i}"]
-                print(f"dir(art) =\n", dir(art))
-                print(f"art.__dir__ =\n", art.__dict__)
-                # Attach PhysX API wrapper
-                #rb_api = PhysxSchema.PhysxRigidBodyAPI.Apply(drone)  # Apply() ensures it’s active
+        art = scene.articulations["Agent"]
 
-                # Define force and position (world coordinates)
-                #force = Gf.Vec3f(0.0, 0.0, 10.0)       # Newtons
-                #position = Gf.Vec3f(0.1, 0.0, 0.0)     # meters, world frame
+        # Some verifications if need be
+        #scrutinize_object(art, "scene.articulations")
+        #scrutinize_object(art, "world_pos")
+        #print(f"len(world_pos)", len(world_pos))
+        #print(f"type(world_pos)", type(world_pos), "\n")
+        #print(f"world_pos\n",world_pos, "\n\n")
 
-                Ri = R[i]              # (3,3)
-                pi = world_pos[i]      # (3,)
+        cmds = motor_cmds01
+        # body z-axis (thrust direction) in world frame = Ri @ [0,0,1]
+        thrust_dir_world = R.apply([0.0, 0.0, 1.0])
+        #local_com = dci.get_rigid_body_center_of_mass(drone, local=True) #Center of mass in local coordinates
 
-                cmds = motor_cmds01[i]
-                # body z-axis (thrust direction) in world frame = Ri @ [0,0,1]
-                thrust_dir_world = Ri.apply([0.0, 0.0, 1.0])
-                #local_com = dci.get_rigid_body_center_of_mass(drone, local=True) #Center of mass in local coordinates
+        for m in range(4):
+            # body-frame motor offset -> world position
+            r_b = self._offsets_body[m]
+            r_w = R.apply(r_b)  # rotate offset into world
+            p = np.array([[v[0], v[1], v[2]] for v in world_pos])
+            p_app = torch.tensor(np.array([p[0] + r_w[0], p[1] + r_w[1], p[2] + r_w[2]]))
+            
+            # Verification if necessary
+            #print(f"p.shape = {p.shape}")
+            #print(f"r_w.shape = {r_w.shape}")
+            
+            # thrust magnitude
+            Fm = self._cmd_to_thrust(cmds[m])
+            F_vec = torch.tensor([thrust_dir_world[0] * Fm,
+                    thrust_dir_world[1] * Fm,
+                    thrust_dir_world[2] * Fm])
 
-                for m in range(4):
-                    # body-frame motor offset -> world position
-                    r_b = self._offsets_body[m]
-                    r_w = Ri.apply(r_b)  # rotate offset into world
-                    p_app = torch.tensor([pi[0] + r_w[0], pi[1] + r_w[1], pi[2] + r_w[2]])
-                    # thrust magnitude
-                    Fm = self._cmd_to_thrust(cmds[m])
-                    F_vec = torch.tensor([thrust_dir_world[0] * Fm,
-                            thrust_dir_world[1] * Fm,
-                            thrust_dir_world[2] * Fm])
+            # Determine torque
+            #torque = np.cross(p_app - local_com, F_vec)
+            #torque = np.cross(p_app, F_vec)   # wrong formula, only needed to see if subsequent code runs   
+            
+            world_points.append(p_app)
+            world_forces.append(F_vec)
+            
 
-                    # Apply force at center of mass
-                    #dci.apply_force(drone, F_vec)
-                    #art.
-                    # Determine torque
-                    torque = np.cross(p_app - local_com, F_vec)
-                    #dci.apply_torque(drone, torque)
+            if add_reaction_torque:
+                # Reaction torque around body z (world z after rotation) from rotation of the rotor. No yaw without it.
+                tz = self.p.torque_coeff * F_vec * self.p.spin_dirs[m]
+                
+                # Pick any unit vector perpendicular to thrust_dir_world
+                if np.allclose(thrust_dir_world, [0,0,1]):
+                    perp = np.array([1.0, 0.0, 0.0])
+                else:
+                    perp = np.cross(thrust_dir_world, [0,0,1])
+                    perp /= np.linalg.norm(perp)
 
-                    #rb_api.ApplyForceAtPos().Set([(F_vec, p_app)])
+                # Force magnitude to produce torque: |F| * d = torque
+                F_mag = tz / self.p.yaw_force_dist
 
-                    #if drone.HasAPI(UsdPhysics.RigidBodyAPI):
-                    #    rigid_body_api = UsdPhysics.RigidBodyAPI(drone)
-                    #    print("\nRigid body API exists:", rigid_body_api, "\n")
-                    #else:
-                    #    print("No RigidBodyAPI found on this prim")
-                    #rigid_body_api.set_external_force_and_torque(F_vec, torch.zeros(0,3), p_app)
-                    ## see: https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.assets.html#isaaclab.assets.RigidObject.set_external_force_and_torque
+                # Two points along perpendicular direction
+                p1 = p_app + 0.5 * self.p.yaw_force_dist * perp
+                p2 = p_app - 0.5 * self.p.yaw_force_dist * perp
 
-                    world_points.append(p_app)
-                    world_forces.append(F_vec)
+                F1 = F_mag * perp
+                F2 = -F1
 
-                    if add_reaction_torque:
-                        # Yaw reaction torque around body z (world z after rotation)
-                        tz = self.p.torque_coeff * Fm * self.p.spin_dirs[m]
-                        
-                        # Pick any unit vector perpendicular to thrust_dir_world
-                        if np.allclose(thrust_dir_world, [0,0,1]):
-                            perp = np.array([1.0, 0.0, 0.0])
-                        else:
-                            perp = np.cross(thrust_dir_world, [0,0,1])
-                            perp /= np.linalg.norm(perp)
+                # Apply force at position
+                #rb_api.ApplyForceAtPos().Set([(F1, p1), (F2, p2)])
+                
+                world_points.extend([p1, p2])
+                world_forces.extend([F1, F2])
 
-                        # Force magnitude to produce torque: |F| * d = tau
-                        F_mag = tz / self.p.yaw_force_dist
 
-                        # Two points along perpendicular direction
-                        p1 = p_app + 0.5 * self.p.yaw_force_dist * perp
-                        p2 = p_app - 0.5 * self.p.yaw_force_dist * perp
+        # Apply total force and torque
+        art.set_external_force_and_torque( link_name=drones[0],
+                                           force=world_forces,
+                                           torque=torch.zeros(16, 3),
+                                           is_force_local=True,
+                                           is_torque_local=True   # torque expressed in link-local frame
+                                         )
 
-                        F1 = F_mag * perp
-                        F2 = -F1
 
-                        # Apply force at position
-                        #rb_api.ApplyForceAtPos().Set([(F1, p1), (F2, p2)])
-                        
-                        world_points.extend([p1, p2])
-                        world_forces.extend([F1, F2])
-        else:
-            pass
 
-        
-        # 2) Apply all forces (and optional torques) at positions
-        # Isaac Lab views generally have one of the following:
-        #   rigid_view.apply_forces_at_positions(forces, positions, env_ids, is_global=True)
-        #   rigid_view.apply_forces(forces, env_ids, is_global=True)  # at COM
-        # Choose the “at positions” variant to create the proper moments automatically.
+
+def scrutinize_object(obj, name: str):
+    print(f"\n\ndir(object) for {name}\n", dir(obj))
+    print(f"\n\nobject.__dict__ for {name})\n", dir(obj),"\n\n")
         
 
         
