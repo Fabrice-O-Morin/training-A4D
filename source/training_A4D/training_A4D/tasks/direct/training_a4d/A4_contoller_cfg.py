@@ -66,17 +66,20 @@ class A4ForcesController:
         self._offsets_body = self.p.motor_offsets_body()
 
 
-    def _cmd_to_thrust(self, u: float) -> float:
-        u = max(0.0, min(1.0, float(u)))  # clamp between 0 and 1
+    def _cmd_to_thrust(self, x):
+        y = x.float() 
+        z  = torch.clamp(y, min=0, max=1.0)   # clamp between 0 and 1
         if self.p.cmd_to_thrust_map == "quadratic_map":
-            return (u * u) * self.p.max_thrust_N  # quadratic model of the thrust value as a function of input
+            return (z ** 2) * self.p.max_thrust_N  # quadratic model of the thrust value as a function of input
         else:
-            return u * self.p.max_thrust_N  # linear mapping
+            return z * self.p.max_thrust_N  # linear mapping
 
 
     def apply_forces(
         self,
         drones,
+        body_index,
+        env_ids,
         scene,
         motor_cmds01: Sequence[Sequence[float]],
         add_reaction_torque: bool = True,
@@ -102,10 +105,11 @@ class A4ForcesController:
         # Precompute world-space application points and forces
         world_points = []
         world_forces = []
-        #world_torques = [] 
+        world_torques = [] 
 
 
         art = scene.articulations["Agent"]
+
 
         # Some verifications if need be
         #scrutinize_object(art, "scene.articulations")
@@ -114,27 +118,56 @@ class A4ForcesController:
         #print(f"type(world_pos)", type(world_pos), "\n")
         #print(f"world_pos\n",world_pos, "\n\n")
 
-        cmds = motor_cmds01
+
+        cmds = motor_cmds01  
+        # Verification of motor commands (actions from policy)
+        #print(f"cmds type = {type(cmds)}")  # Tensor num_envs,4
+        #print(f"cmds =\n{cmds}")
+        #print(f"\ncmds shape = {cmds.shape}")  # Tensor num_envs,4
+
+
         # body z-axis (thrust direction) in world frame = Ri @ [0,0,1]
-        thrust_dir_world = R.apply([0.0, 0.0, 1.0])
-        #local_com = dci.get_rigid_body_center_of_mass(drone, local=True) #Center of mass in local coordinates
+        thrust_dir_world = R.apply([0.0, 0.0, 1.0])                    # should be shape (num_envs,3)
+        # Verification
+        #print(f"\nthrust_dir_world = \n", thrust_dir_world)
+        #print(f"\nthrust_dir_world.shape = ", thrust_dir_world.shape)  
+
 
         for m in range(4):
             # body-frame motor offset -> world position
-            r_b = self._offsets_body[m]
-            r_w = R.apply(r_b)  # rotate offset into world
-            p = np.array([[v[0], v[1], v[2]] for v in world_pos])
-            p_app = torch.tensor(np.array([p[0] + r_w[0], p[1] + r_w[1], p[2] + r_w[2]]))
+            r_b = np.array(self._offsets_body[m])                      # should be shape (3,)
+            r_w = R.apply(r_b)  # rotate offset into world       -       should be shape (num_envs,3)
+            p = np.array([[v[0], v[1], v[2]] for v in world_pos])      # should be shape (num_envs,3)
+            p_app = p + r_w
             
             # Verification if necessary
-            #print(f"p.shape = {p.shape}")
+            #print(f"\nr_b.shape = {r_b.shape}")
+            #print(f"r_b = self._offsets_body[m] = {self._offsets_body[m]}\n")  #
             #print(f"r_w.shape = {r_w.shape}")
+            #print(f"r_w = {r_w}\n")  #
+            #print(f"p_app =\n", p_app, "\n")
+
             
             # thrust magnitude
-            Fm = self._cmd_to_thrust(cmds[m])
-            F_vec = torch.tensor([thrust_dir_world[0] * Fm,
-                    thrust_dir_world[1] * Fm,
-                    thrust_dir_world[2] * Fm])
+            Fm = self._cmd_to_thrust(cmds)                            # should be shape (num_envs,4)
+            thrust_dir_world_batched = torch.tensor(thrust_dir_world, device = "cuda:0").unsqueeze(1).repeat(1, 4, 1).clone()
+                                                                      # should be shape (num_envs,4,3)
+            F_vec = thrust_dir_world_batched * Fm.unsqueeze(-1)       # should be shape (num_envs,4,3)
+
+
+            # Verification
+            #print(f"\ncmds.shape = {cmds.shape}")                    # should be (num_envs, 4)
+            #print(f"cmds =\n", cmds, "\n")
+            #print(f"\nthrust_dir_world_batched.shape = {thrust_dir_world_batched.shape}\n") 
+            #print(f"\nthrust_dir_world_batched =\n{thrust_dir_world_batched}\n")
+                                                                      # should be shape (num_envs,4)
+            #print(f"\nFm.shape = {Fm.shape}")                         # should be shape (num_envs,4)
+            #print(f"Fm =\n", Fm, "\n")
+            #print(f"\nF_vec.shape = {F_vec.shape}")                   # should be shape (num_envs,4,3)
+            #print(f"F_vec =\n", F_vec, "\n")
+
+
+
 
             # Determine torque
             #torque = np.cross(p_app - local_com, F_vec)
@@ -173,11 +206,11 @@ class A4ForcesController:
 
 
         # Apply total force and torque
-        art.set_external_force_and_torque( link_name=drones[0],
-                                           force=world_forces,
-                                           torque=torch.zeros(16, 3),
-                                           is_force_local=True,
-                                           is_torque_local=True   # torque expressed in link-local frame
+        art.set_external_force_and_torque(
+                                           world_forces,
+                                           torch.zeros(16, 3),
+                                           [body_index],
+                                           env_ids
                                          )
 
 

@@ -99,11 +99,6 @@ class TrainingA4dEnv(DirectRLEnv):
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
 
-        # Add articulations to scene manually into the various envs
-        self.articulations = []
-
-        keys = list(self.scene.articulations.keys())
-        print("\n\nAll articulation keys:", keys)
 
         # we need to explicitly filter collisions for CPU simulation
         if self.device == "cpu":
@@ -144,12 +139,12 @@ class TrainingA4dEnv(DirectRLEnv):
  
 
         # Verification: collect the prims where forces will be applied
-        nam1 = "tn__MODELSimpleDrone11_sQI" 
+        self.nam1 = "tn__MODELSimpleDrone11_sQI" 
         #nam0 = "/World/envs/env_.*/A4/ASSEM4D_with_joints/ASSEM4D/tn__Drone_body_with_flangesAssem4d1_ik0xp0"
         self.drone_bodies_prims = [prim for prim in self.stage.Traverse() 
-                             if ( (nam1 == str(prim.GetName())) and (prim.HasAPI(UsdPhysics.RigidBodyAPI)) ) ] # List of drone bodies in agent A4
+                             if ( (self.nam1 == str(prim.GetName())) and (prim.HasAPI(UsdPhysics.RigidBodyAPI)) ) ] # List of drone bodies in agent A4
         print("\n\nDrone bodies as prims:\n", "".join([f"{str(prim.GetPath())}\n" for prim in self.drone_bodies_prims]), f"\n")
-
+        
 
         # Verification of hierarchy
         #self.print_hierarchy(self.stage.GetPseudoRoot())
@@ -240,6 +235,8 @@ class TrainingA4dEnv(DirectRLEnv):
         #self._agent.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
         self.control.apply_forces( 
             self.drone_bodies_prims,
+            self.env_ids,
+            self.drone_body_index_in_articulation,
             self.scene,
             self.actions, # Sequence[Sequence[float]]                   # TO-DO
             add_reaction_torque = False
@@ -306,6 +303,14 @@ class TrainingA4dEnv(DirectRLEnv):
             env_ids: List of environment ids which must be reset
         """
 
+        art = self.scene.articulations["Agent"]
+        indices, _ = art.find_bodies(self.nam1)
+        self.drone_body_index_in_articulation = indices[0]
+        # Verfication regarding articulation
+        #keys = list(self.scene.articulations.keys())
+        #print("\n\nAll articulation keys:", keys)
+        #print(f"art.find_bodies(nam1) = ", art.find_bodies(self.nam1)) # returns: ([2], ['tn__MODELSimpleDrone11_sQI'])
+
         # Set collision filtering
         #for env_id in env_ids:
         #    prim_path = f"/World/envs/env_{env_id}"
@@ -318,8 +323,7 @@ class TrainingA4dEnv(DirectRLEnv):
 
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, dtype=torch.int64, device=self.device)
-            
-
+        
 
         # Logging the results of the previous episode
         final_distance_to_goal = torch.linalg.norm(
@@ -340,27 +344,8 @@ class TrainingA4dEnv(DirectRLEnv):
         extras["Metrics/final_distance_to_goal"] = final_distance_to_goal.item()
         self.extras["log"].update(extras)
 
-        
-       
 
-        ### START super()._reset_idx(env_ids)
-        # use reset methods
-        self.scene.reset(env_ids)
-        #self.scene.reset()
-
-        # apply events such as randomization for environments that need a reset
-        if self.cfg.events:
-            if "reset" in self.event_manager.available_modes:
-                env_step_count = self._sim_step_counter // self.cfg.decimation
-                self.event_manager.apply(mode="reset", env_ids=env_ids, global_env_step_count=env_step_count)
-        # reset noise models
-        if self.cfg.action_noise_model:
-            self._action_noise_model.reset(env_ids)
-        if self.cfg.observation_noise_model:
-            self._observation_noise_model.reset(env_ids)
-        # reset the episode length buffer
-        self.episode_length_buf[env_ids] = 0
-        ### END super()._reset_idx(env_ids)
+        super()._reset_idx(env_ids)
 
 
         # Spread out the resets to avoid spikes in training when many environments reset at a similar time
