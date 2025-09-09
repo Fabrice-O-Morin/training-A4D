@@ -17,6 +17,7 @@ from pxr import UsdGeom, PhysxSchema, UsdPhysics
 from scipy.spatial.transform import Rotation
 
 
+
 """Configuration for the A4 as a single rigid body (no articulation)."""
 
 # --------------------------------------------------------------------------------------
@@ -74,6 +75,7 @@ class A4ForcesController:
     def apply_forces(
         self,
         drones,
+        scene,
         motor_cmds01: Sequence[Sequence[float]],
         add_reaction_torque: bool = True,
         ):
@@ -86,6 +88,7 @@ class A4ForcesController:
             add_reaction_torque: if True, apply yaw torques from rotor drag
         """
         #print("APPLY_FORCES")
+
         # Query world poses for the body (positions and orientations)
         xform = [UsdGeom.Xformable(p) for p in drones]
         world_transform = [xformi.ComputeLocalToWorldTransform(0.0) for xformi in xform]
@@ -93,6 +96,7 @@ class A4ForcesController:
         world_quat_temp = [wt.ExtractRotationQuat() for wt in world_transform]
         world_quat = [np.array([w.GetReal(), *w.GetImaginary()]) for w in world_quat_temp]
         print(world_quat)
+        
         # Expect array/tensor shapes: (N, 3) and (N, 4)
         # Convert quat to rotation matrices; Isaac Lab usually offers a helper in math utils.
         # If not, implement a small quat->R; here we assume a helper quat_to_matrix exists:
@@ -107,80 +111,89 @@ class A4ForcesController:
 
         # Get the current stage
         #stage = omni.usd.get_context().get_stage()
+
+        one_by_one = False
         print("APPLY_FORCES 2")
-        for i in range(N):
-            drone = drones[i]
-            # Attach PhysX API wrapper
-            #rb_api = PhysxSchema.PhysxRigidBodyAPI.Apply(drone)  # Apply() ensures it’s active
+        if one_by_one:
+            for i in range(N):
+                drone = drones[i]
+                art = scene.articulations[f"Agent{i}"]
+                print(f"dir(art) =\n", dir(art))
+                print(f"art.__dir__ =\n", art.__dict__)
+                # Attach PhysX API wrapper
+                #rb_api = PhysxSchema.PhysxRigidBodyAPI.Apply(drone)  # Apply() ensures it’s active
 
-            # Define force and position (world coordinates)
-            #force = Gf.Vec3f(0.0, 0.0, 10.0)       # Newtons
-            #position = Gf.Vec3f(0.1, 0.0, 0.0)     # meters, world frame
+                # Define force and position (world coordinates)
+                #force = Gf.Vec3f(0.0, 0.0, 10.0)       # Newtons
+                #position = Gf.Vec3f(0.1, 0.0, 0.0)     # meters, world frame
 
-            Ri = R[i]              # (3,3)
-            pi = world_pos[i]      # (3,)
+                Ri = R[i]              # (3,3)
+                pi = world_pos[i]      # (3,)
 
-            cmds = motor_cmds01[i]
-            # body z-axis (thrust direction) in world frame = Ri @ [0,0,1]
-            thrust_dir_world = Ri.apply([0.0, 0.0, 1.0])
-            #local_com = dci.get_rigid_body_center_of_mass(drone, local=True) #Center of mass in local coordinates
+                cmds = motor_cmds01[i]
+                # body z-axis (thrust direction) in world frame = Ri @ [0,0,1]
+                thrust_dir_world = Ri.apply([0.0, 0.0, 1.0])
+                #local_com = dci.get_rigid_body_center_of_mass(drone, local=True) #Center of mass in local coordinates
 
-            for m in range(4):
-                # body-frame motor offset -> world position
-                r_b = self._offsets_body[m]
-                r_w = Ri.apply(r_b)  # rotate offset into world
-                p_app = torch.tensor([pi[0] + r_w[0], pi[1] + r_w[1], pi[2] + r_w[2]])
-                # thrust magnitude
-                Fm = self._cmd_to_thrust(cmds[m])
-                F_vec = torch.tensor([thrust_dir_world[0] * Fm,
-                         thrust_dir_world[1] * Fm,
-                         thrust_dir_world[2] * Fm])
+                for m in range(4):
+                    # body-frame motor offset -> world position
+                    r_b = self._offsets_body[m]
+                    r_w = Ri.apply(r_b)  # rotate offset into world
+                    p_app = torch.tensor([pi[0] + r_w[0], pi[1] + r_w[1], pi[2] + r_w[2]])
+                    # thrust magnitude
+                    Fm = self._cmd_to_thrust(cmds[m])
+                    F_vec = torch.tensor([thrust_dir_world[0] * Fm,
+                            thrust_dir_world[1] * Fm,
+                            thrust_dir_world[2] * Fm])
 
-                # Apply force at center of mass
-                dci.apply_force(drone, F_vec)
-                # Determine torque
-                torque = np.cross(p_app - local_com, F_vec)
-                dci.apply_torque(drone, torque)
+                    # Apply force at center of mass
+                    #dci.apply_force(drone, F_vec)
+                    #art.
+                    # Determine torque
+                    torque = np.cross(p_app - local_com, F_vec)
+                    #dci.apply_torque(drone, torque)
 
-                #rb_api.ApplyForceAtPos().Set([(F_vec, p_app)])
+                    #rb_api.ApplyForceAtPos().Set([(F_vec, p_app)])
 
-                #if drone.HasAPI(UsdPhysics.RigidBodyAPI):
-                #    rigid_body_api = UsdPhysics.RigidBodyAPI(drone)
-                #    print("\nRigid body API exists:", rigid_body_api, "\n")
-                #else:
-                #    print("No RigidBodyAPI found on this prim")
-                #rigid_body_api.set_external_force_and_torque(F_vec, torch.zeros(0,3), p_app)
-                ## see: https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.assets.html#isaaclab.assets.RigidObject.set_external_force_and_torque
+                    #if drone.HasAPI(UsdPhysics.RigidBodyAPI):
+                    #    rigid_body_api = UsdPhysics.RigidBodyAPI(drone)
+                    #    print("\nRigid body API exists:", rigid_body_api, "\n")
+                    #else:
+                    #    print("No RigidBodyAPI found on this prim")
+                    #rigid_body_api.set_external_force_and_torque(F_vec, torch.zeros(0,3), p_app)
+                    ## see: https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.assets.html#isaaclab.assets.RigidObject.set_external_force_and_torque
 
-                world_points.append(p_app)
-                world_forces.append(F_vec)
+                    world_points.append(p_app)
+                    world_forces.append(F_vec)
 
-                if add_reaction_torque:
-                    # Yaw reaction torque around body z (world z after rotation)
-                    tz = self.p.torque_coeff * Fm * self.p.spin_dirs[m]
-                    
-                    # Pick any unit vector perpendicular to thrust_dir_world
-                    if np.allclose(thrust_dir_world, [0,0,1]):
-                        perp = np.array([1.0, 0.0, 0.0])
-                    else:
-                        perp = np.cross(thrust_dir_world, [0,0,1])
-                        perp /= np.linalg.norm(perp)
+                    if add_reaction_torque:
+                        # Yaw reaction torque around body z (world z after rotation)
+                        tz = self.p.torque_coeff * Fm * self.p.spin_dirs[m]
+                        
+                        # Pick any unit vector perpendicular to thrust_dir_world
+                        if np.allclose(thrust_dir_world, [0,0,1]):
+                            perp = np.array([1.0, 0.0, 0.0])
+                        else:
+                            perp = np.cross(thrust_dir_world, [0,0,1])
+                            perp /= np.linalg.norm(perp)
 
-                    # Force magnitude to produce torque: |F| * d = tau
-                    F_mag = tz / self.p.yaw_force_dist
+                        # Force magnitude to produce torque: |F| * d = tau
+                        F_mag = tz / self.p.yaw_force_dist
 
-                    # Two points along perpendicular direction
-                    p1 = p_app + 0.5 * self.p.yaw_force_dist * perp
-                    p2 = p_app - 0.5 * self.p.yaw_force_dist * perp
+                        # Two points along perpendicular direction
+                        p1 = p_app + 0.5 * self.p.yaw_force_dist * perp
+                        p2 = p_app - 0.5 * self.p.yaw_force_dist * perp
 
-                    F1 = F_mag * perp
-                    F2 = -F1
+                        F1 = F_mag * perp
+                        F2 = -F1
 
-                    # Apply force at position
-                    rb_api.ApplyForceAtPos().Set([(F1, p1), (F2, p2)])
-                    
-                    world_points.extend([p1, p2])
-                    world_forces.extend([F1, F2])
+                        # Apply force at position
+                        #rb_api.ApplyForceAtPos().Set([(F1, p1), (F2, p2)])
+                        
+                        world_points.extend([p1, p2])
+                        world_forces.extend([F1, F2])
+        else:
+            pass
 
         
         # 2) Apply all forces (and optional torques) at positions

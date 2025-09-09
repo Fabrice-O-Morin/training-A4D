@@ -93,8 +93,8 @@ class TrainingA4dEnv(DirectRLEnv):
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
         
         # Add articulation to scene if it is to be cloned
-        self._agent = Articulation(cfg=self.cfg.A4_RIGID_CFG)
-        #self.scene.articulations["Agent"] = self._agent
+        self.agent = Articulation(cfg=self.cfg.A4_RIGID_CFG)
+        self.scene.articulations["Agent"] = self.agent
         
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
@@ -104,11 +104,10 @@ class TrainingA4dEnv(DirectRLEnv):
 
         # Add articulations to scene manually into the various envs
         self.articulations = []
-        for i in range(self.num_envs):
-            agent = Articulation(cfg=self.cfg.A4_RIGID_CFG.replace(prim_path = f"/World/envs/env_{i}/A4"))
-            #self.scene.articulations[f"Agent"] = agent
-            self.scene.articulations[f"Agent{i}"] = agent
-            self.articulations.append(agent)
+        #for i in range(self.num_envs):
+            #agent = Articulation(cfg=self.cfg.A4_RIGID_CFG.replace(prim_path = f"/World/envs/env_{i}/A4"))
+            #self.scene.articulations[f"Agent{i}"] = agent
+            #self.articulations.append(agent)
 
         keys = list(self.scene.articulations.keys())
         print("\n\nAll articulation keys:", keys)
@@ -127,10 +126,6 @@ class TrainingA4dEnv(DirectRLEnv):
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
-
-
-        # Verification
-        #self.print_hierarchy(self.stage.GetPseudoRoot())
 
 
         # Verification: List of rigid bodies in one agent A4
@@ -176,6 +171,8 @@ class TrainingA4dEnv(DirectRLEnv):
         #self.drone_bodies_articulations = [self.dci.get_articulation(str(self.get_articulation_root(prim).GetPath()))  
         #                              for prim in self.drone_bodies_prims]
 
+        # Verification of hierarchy
+        self.print_hierarchy(self.stage.GetPseudoRoot())
 
         print(f"\n\nEND SETUP_SCENE\n\n\n")
 
@@ -261,6 +258,7 @@ class TrainingA4dEnv(DirectRLEnv):
         #self._agent.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
         self.control.apply_forces( 
             self.drone_bodies_prims, 
+            self.scene,
             self.actions, # Sequence[Sequence[float]]                   # TO-DO
             add_reaction_torque = True
             )
@@ -274,13 +272,13 @@ class TrainingA4dEnv(DirectRLEnv):
             The observations for the environment.
         """
         desired_pos_b, _ = subtract_frame_transforms(
-            self._agent.data.root_pos_w, self._agent.data.root_quat_w, self._desired_pos_w
+            self.agent.data.root_pos_w, self.agent.data.root_quat_w, self._desired_pos_w
         )
         obs = torch.cat(
             [
-                self._agent.data.root_lin_vel_b,
-                self._agent.data.root_ang_vel_b,
-                self._agent.data.projected_gravity_b,
+                self.agent.data.root_lin_vel_b,
+                self.agent.data.root_ang_vel_b,
+                self.agent.data.projected_gravity_b,
                 desired_pos_b,
             ],
             dim=-1,
@@ -295,9 +293,9 @@ class TrainingA4dEnv(DirectRLEnv):
         Returns:
             The rewards for the environment. Shape is (num_envs,).
         """
-        lin_vel = torch.sum(torch.square(self._agent.data.root_lin_vel_b), dim=1)
-        ang_vel = torch.sum(torch.square(self._agent.data.root_ang_vel_b), dim=1)
-        distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._agent.data.root_pos_w, dim=1)
+        lin_vel = torch.sum(torch.square(self.agent.data.root_lin_vel_b), dim=1)
+        ang_vel = torch.sum(torch.square(self.agent.data.root_ang_vel_b), dim=1)
+        distance_to_goal = torch.linalg.norm(self._desired_pos_w - self.agent.data.root_pos_w, dim=1)
         distance_to_goal_mapped = 1 - torch.tanh(distance_to_goal / 0.8)
         rewards = {
             "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
@@ -314,7 +312,7 @@ class TrainingA4dEnv(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        died = torch.logical_or(self._agent.data.root_pos_w[:, 2] < 0.1, self._agent.data.root_pos_w[:, 2] > 2.0)
+        died = torch.logical_or(self.agent.data.root_pos_w[:, 2] < 0.1, self.agent.data.root_pos_w[:, 2] > 2.0)
         return died, time_out
 
 
@@ -325,6 +323,8 @@ class TrainingA4dEnv(DirectRLEnv):
         Args:
             env_ids: List of environment ids which must be reset
         """
+
+        one_by_one = False
 
         #self.print_hierarchy(self.stage.GetPseudoRoot())
 
@@ -346,30 +346,33 @@ class TrainingA4dEnv(DirectRLEnv):
 
 
         # Logging the results of the previous episode
-        #final_distance_to_goal = torch.linalg.norm(
-        #    self._desired_pos_w[env_ids] - self._agent.data.root_pos_w[env_ids], dim=1
-        #).mean()
-
-        for i in env_ids_list:
-            xform = UsdGeom.Xformable(self.drone_bodies_prims[i])
-            world_tf = xform.ComputeLocalToWorldTransform(0)   # Gf.Matrix4d
-            pos = world_tf.ExtractTranslation()                # Gf.Vec3d(x, y, z)
-            post_tensor = torch.tensor([pos[0], pos[1], pos[2]], dtype=torch.float32, device="cuda:0")
-            #rot = world_tf.ExtractRotationQuat()               # Gf.Quatd(real, i, j, k)
-            sum_final_distance_to_goal = torch.linalg.norm(self._desired_pos_w[i] - post_tensor)
-        sum_final_distance_to_goal /= self.num_envs
+        if one_by_one:
+            print("NOPE NOPE\n\n\n")
+            for i in env_ids_list:
+                xform = UsdGeom.Xformable(self.drone_bodies_prims[i])
+                world_tf = xform.ComputeLocalToWorldTransform(0)   # Gf.Matrix4d
+                pos = world_tf.ExtractTranslation()                # Gf.Vec3d(x, y, z)
+                post_tensor = torch.tensor([pos[0], pos[1], pos[2]], dtype=torch.float32, device="cuda:0")
+                #rot = world_tf.ExtractRotationQuat()               # Gf.Quatd(real, i, j, k)
+                final_distance_to_goal = torch.linalg.norm(self._desired_pos_w[i] - post_tensor)
+            final_distance_to_goal /= self.num_envs
+        else:
+            final_distance_to_goal = torch.linalg.norm(
+                self._desired_pos_w[env_ids] - self.agent.data.root_pos_w[env_ids], dim=1
+                ).mean()
 
         extras = dict()
         for key in self._episode_sums.keys():
             episodic_sum_avg = torch.mean(self._episode_sums[key][env_ids])
             extras["Episode_Reward/" + key] = episodic_sum_avg / self.max_episode_length_s
             self._episode_sums[key][env_ids] = 0.0
+            
         self.extras["log"] = dict()
         self.extras["log"].update(extras)
         extras = dict()
         extras["Episode_Termination/died"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
         extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
-        extras["Metrics/final_distance_to_goal"] = sum_final_distance_to_goal.item()
+        extras["Metrics/final_distance_to_goal"] = final_distance_to_goal.item()
         self.extras["log"].update(extras)
 
         # use reset methods
@@ -380,7 +383,7 @@ class TrainingA4dEnv(DirectRLEnv):
 
         #self.scene.reset(env_ids)
         self.scene.reset()
-        print("mark1")
+
         # apply events such as randomization for environments that need a reset
         if self.cfg.events:
             if "reset" in self.event_manager.available_modes:
@@ -396,10 +399,9 @@ class TrainingA4dEnv(DirectRLEnv):
         print("END reset method des env_ids\n\n\n")
 
 
-
-        if len(env_ids) == self.num_envs:
-            # Spread out the resets to avoid spikes in training when many environments reset at a similar time
-            self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
+        # Spread out the resets to avoid spikes in training when many environments reset at a similar time
+        #if len(env_ids) == self.num_envs:  
+        #    self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
 
 
         # Now (re-)initialize task-specific parameters
@@ -410,27 +412,50 @@ class TrainingA4dEnv(DirectRLEnv):
         self._desired_pos_w[env_ids, 2] = torch.zeros_like(self._desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
         
         # Reset agent state
-        for i in env_ids:
-            print(f"GO i={i}")
-            art = self.scene.articulations[f"Agent{i}"]
-            # joints
-            print(f"joint_pos = {art.data.default_joint_pos}")
-            print(f"joint_vel = {art.data.default_joint_vel}")
-            joint_pos = art.data.default_joint_pos
-            joint_vel = art.data.default_joint_vel
-            art.write_joint_state_to_sim(joint_pos, 
-                                         joint_vel, 
-                                         joint_ids=None,
-                                         env_ids=torch.tensor([0], dtype=torch.long, device="cuda:0") )  
-            # articulation root
-            default_root_state = art.data.default_root_state
-            print(f"default_root_state[0, :3] is {default_root_state[0, :3]}")
-            print(f"self._terrain.env_origins[i] is {self._terrain.env_origins[i]}")
+        if one_by_one:
+            print("NOPE NOPE NOPE\n\n\n\n")
+            One_Dim_env=torch.tensor([0], dtype=torch.long, device="cuda:0") 
+            for i in env_ids:
+                #print(f"GO i={i}")
+                art = self.scene.articulations[f"Agent{i}"]
+                # joints
+                #print(f"joint_pos = {art.data.default_joint_pos}")
+                #print(f"joint_vel = {art.data.default_joint_vel}")
+                joint_pos = art.data.default_joint_pos
+                joint_vel = art.data.default_joint_vel
+                art.write_joint_state_to_sim(joint_pos, 
+                                            joint_vel, 
+                                            joint_ids=None,
+                                            env_ids=One_Dim_env)  
+                # articulation root
+                default_root_state = art.data.default_root_state
+                #print(f"default_root_state[0, :3] is {default_root_state[0, :3]}")
+                #print(f"self._terrain.env_origins[i] is {self._terrain.env_origins[i]}")
 
-            default_root_state[0,:3] += self._terrain.env_origins[i]
-            art.write_root_pose_to_sim(default_root_state[0,:7], env_ids=torch.tensor([0], dtype=torch.long, device="cuda:0"))
-            art.write_root_velocity_to_sim(default_root_state[0,7:], env_ids=torch.tensor([0], dtype=torch.long, device="cuda:0"))
-            print(f"DONE i={i}")
+                default_root_state[0,:3] += self._terrain.env_origins[i]
+                art.write_root_pose_to_sim(default_root_state[0,:7], env_ids=One_Dim_env)
+                art.write_root_velocity_to_sim(default_root_state[0,7:], env_ids=One_Dim_env)
+                #print(f"DONE i={i}\n")
+        
+        else:
+            art = self.scene.articulations[f"Agent"]
+            
+            # Verification, e.g., of batching
+            #print(f"dict", art.__dict__)
+            #print(f"\ndir(art)\n", dir(art))
+
+            # joints
+            #print(f"joint_pos = {art.data.default_joint_pos}")
+            #print(f"joint_vel = {art.data.default_joint_vel}")
+            joint_pos = art.data.default_joint_pos[env_ids]
+            joint_vel = art.data.default_joint_vel[env_ids]
+            art.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)  
+            
+            # articulation root
+            default_root_state = art.data.default_root_state[env_ids]
+            default_root_state[:,:3] += self._terrain.env_origins[env_ids]
+            art.write_root_pose_to_sim(default_root_state[:,:7], env_ids)
+            art.write_root_velocity_to_sim(default_root_state[:,7:], env_ids)
 
         print(f"END RESET")
 
