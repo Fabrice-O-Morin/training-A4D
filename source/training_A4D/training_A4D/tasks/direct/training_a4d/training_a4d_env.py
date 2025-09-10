@@ -6,13 +6,13 @@
 from __future__ import annotations
 from collections.abc import Sequence
 
-import math
+import numpy as np
 import gymnasium as gym
 import torch
 
 import omni
 import omni.isaac.dynamic_control as dc
-from pxr import  UsdPhysics, UsdGeom#, Usd, PhysxSchema
+from pxr import  UsdPhysics, UsdGeom, Usd, Gf #, PhysxSchema
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
@@ -24,6 +24,9 @@ from isaaclab.utils.math import subtract_frame_transforms #, sample_uniform
 
 
 from .training_a4d_env_cfg import TrainingA4dEnvCfg
+
+from .utils import print_hierarchy
+#import training_a4d.tasks.direct.training_a4d.utils
 
 
 
@@ -58,6 +61,8 @@ class TrainingA4dEnv(DirectRLEnv):
         self._total_weight = self._total_mass * self._gravity_magnitude
 
         self.control = cfg.control 
+
+        self.number_of_bodies_in_articulation = 3
 
         # add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
         #self.set_debug_vis(self.cfg.debug_vis)
@@ -110,7 +115,7 @@ class TrainingA4dEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
 
-        # Verification: List of rigid bodies in one agent A4
+        # List of rigid bodies in one agent A4 in env_0
         A4_path = "/World/envs/env_0/A4/ASSEM4D_with_joints" #self.cfg.A4_RIGID_CFG.prim_path #"{ENV_REGEX_NS}"
         self.rigid_bodies = []    # List of rigid bodies in agent A4
         total_mass = 0.0
@@ -128,14 +133,26 @@ class TrainingA4dEnv(DirectRLEnv):
         self._total_mass = total_mass
         print(f"\nself._total_mass = ", total_mass, "\n")
 
-        
-        # Verification: List of joints in agent A4
+        # Verification: List of joints in agent A4 in env_0
         self.joints = []    
         for prim in self.stage.Traverse():
             if str(prim.GetPath()).startswith(A4_path): 
                 if UsdPhysics.Joint(prim):
                     self.joints.append(prim)                  
         print(  f"\nJoints:\n"  +  "".join([f"{rb.GetPath()}\n" for rb in self.joints])  )
+
+        # List of rigid bodies making up the drone block in all agents
+        self.prims_drone_block = []
+        nam_obj = "tn__Drone_body_with_flangesAssem4d1_ik0xp0"
+        for prim in self.stage.Traverse():
+            if str(prim.GetName()) == nam_obj:
+                prim_block = prim.GetChildren()  
+                self.prims_drone_block.append(prim_block)
+        print(  f"\nPrims of all drone blocks:")
+        for rb in self.prims_drone_block:       
+            print(  ["".join(f"{x.GetName()}\n") for x in rb]   )     
+
+
  
 
         # Verification: collect the prims where forces will be applied
@@ -144,11 +161,12 @@ class TrainingA4dEnv(DirectRLEnv):
         self.drone_bodies_prims = [prim for prim in self.stage.Traverse() 
                              if ( (self.nam1 == str(prim.GetName())) and (prim.HasAPI(UsdPhysics.RigidBodyAPI)) ) ] # List of drone bodies in agent A4
         print("\n\nDrone bodies as prims:\n", "".join([f"{str(prim.GetPath())}\n" for prim in self.drone_bodies_prims]), f"\n")
-        
+    
 
         # Verification of hierarchy
-        #self.print_hierarchy(self.stage.GetPseudoRoot())
+        #print_hierarchy(self.stage.GetPseudoRoot())
 
+        self.art = self.scene.articulations["Agent"]
         self.env_ids = torch.arange(self.num_envs, dtype=torch.int64, device=self.device)
 
         print(f"\n\nEND SETUP_SCENE\n\n\n")
@@ -178,37 +196,10 @@ class TrainingA4dEnv(DirectRLEnv):
 
 
 
-    def print_stage_traverse(self):
-        print(f"\n\n\nSTAGE TRAVERSE\n")
-        for prim in self.stage.Traverse():
-            print("Prim:", prim.GetPath(), "Type:", prim.GetTypeName())
-        print(f"END STAGE TRAVERSE\n \n \n")
-
-
-
-    def get_articulation_root(self,link_prim):
-        prim = link_prim
-        while prim:
-            if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
-                return prim
-            prim = prim.GetParent()
-        return None
-
     
 
-    def get_all_descendants(self,prim):
-        descendants = []
-        for child in prim.GetChildren():
-            descendants.append(child)
-            descendants.extend(self.get_all_descendants(child))
-        return descendants
 
-
-
-    def print_hierarchy(self, prim, indent=0):
-        print("  " * indent + prim.GetName())
-        for child in prim.GetChildren():
-            self.print_hierarchy(child, indent + 1)
+   
     
 
 
@@ -232,15 +223,17 @@ class TrainingA4dEnv(DirectRLEnv):
         This function is responsible for applying the actions to the simulator. It is called at each
         physics time-step.
         """
-        #self._agent.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
         self.control.apply_forces( 
             self.drone_bodies_prims,
             self.env_ids,
             self.drone_body_index_in_articulation,
-            self.scene,
+            self.number_of_bodies_in_articulation,
+            self.art,
+            self.prims_drone_block,
             self.actions, # Sequence[Sequence[float]]                   # TO-DO
             add_reaction_torque = False
             )
+        self.art.write_data_to_sim()
         
 
 
@@ -372,7 +365,7 @@ class TrainingA4dEnv(DirectRLEnv):
         art.write_root_pose_to_sim(default_root_state[:,:7], env_ids)
         art.write_root_velocity_to_sim(default_root_state[:,7:], env_ids)
 
-        print(f"END RESET")
+        print(f"END RESET\n\n\n")
 
         
 
