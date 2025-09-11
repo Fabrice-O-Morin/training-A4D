@@ -229,9 +229,8 @@ class TrainingA4dEnv(DirectRLEnv):
             self.drone_body_index_in_articulation,
             self.number_of_bodies_in_articulation,
             self.art,
-            self.prims_drone_block,
             self.actions, # Sequence[Sequence[float]]                   # TO-DO
-            add_reaction_torque = False
+            add_reaction_torque = True
             )
         self.art.write_data_to_sim()
         
@@ -297,12 +296,19 @@ class TrainingA4dEnv(DirectRLEnv):
         """
 
         art = self.scene.articulations["Agent"]
+
+        #com_positions = art.data.body_com_pos_w 
+        
         indices, _ = art.find_bodies(self.nam1)
         self.drone_body_index_in_articulation = indices[0]
+        
         # Verfication regarding articulation
         #keys = list(self.scene.articulations.keys())
         #print("\n\nAll articulation keys:", keys)
         #print(f"art.find_bodies(nam1) = ", art.find_bodies(self.nam1)) # returns: ([2], ['tn__MODELSimpleDrone11_sQI'])
+        #print(f"shape of com_positions: ", com_positions.shape, "type = ", com_positions.dtype, " and device = ", com_positions.device)
+        #print(dir(art.data))
+        
 
         # Set collision filtering
         #for env_id in env_ids:

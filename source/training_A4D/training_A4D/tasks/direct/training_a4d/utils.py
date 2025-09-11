@@ -4,6 +4,7 @@ import numpy as np
 
 def get_centers_of_mass(blk, device="cuda:0"):
         """
+        With articulation, rendered useless by    articulation.data.body_com_pos_w 
         Compute the center of mass of a set of rigid bodies in Isaac Sim.
 
         Args:
@@ -23,7 +24,6 @@ def get_centers_of_mass(blk, device="cuda:0"):
             for j in range(3): 
                 prim =  prim_list[j]
                 
-                prim_path = prim.GetPath().pathString
                 mass_prim = prim.GetAttribute('physics:mass').Get()# physx_iface.get_rigid_body_mass(prim_path)
                 a,b,c = prim.GetAttribute('physics:centerOfMass').Get() # physx_iface.get_rigid_body_center_of_mass(prim_path) # returns tuple of 3 floats
                 com_world = [a,b,c]

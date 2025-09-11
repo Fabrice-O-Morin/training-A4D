@@ -4,15 +4,14 @@
 
 from __future__ import annotations
 import torch
-import math
 import numpy as np
 from dataclasses import dataclass
 from typing import Sequence, Tuple
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import RigidObjectCfg #, RigidPrimView
+#from isaaclab.assets import RigidObjectCfg #, RigidPrimView
 #from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
-from .utils import get_centers_of_mass
+#from .utils import get_centers_of_mass
 
 #import omni.physx
 from pxr import UsdGeom, PhysxSchema, UsdPhysics, Usd, Gf
@@ -41,6 +40,8 @@ class QuadMotorForcesParams:
     cmd_to_thrust_map = "quadratic_map"
 
     yaw_force_dist = 0.01
+
+    number_of_motors = 4
 
 
     def motor_offsets_body(self) -> Tuple[Tuple[float, float, float], ...]:
@@ -81,10 +82,9 @@ class A4ForcesController:
         self,
         drones,
         env_ids,
-        body_index,
-        nba,
+        body_index,     # index of the body inside the articulatio where force is to be applied
+        nba,            # numbers of bodies in one articulation
         art,
-        blk,
         motor_cmds01: Sequence[Sequence[float]],
         add_reaction_torque: bool = True,
         ):
@@ -96,6 +96,8 @@ class A4ForcesController:
             motor_cmds01: shape (len(env_ids), 4), normalized [0..1]
             add_reaction_torque: if True, apply yaw torques from rotor drag
         """
+        nom = self.p.number_of_motors
+        nenvs = len(env_ids)
 
         # Query world poses for the body (positions and orientations)
         xform = [UsdGeom.Xformable(p) for p in drones]
@@ -133,7 +135,7 @@ class A4ForcesController:
         #print(f"\nthrust_dir_world.shape = ", thrust_dir_world.shape)  
 
 
-        for m in range(4):
+        for m in range(nom):
             # body-frame motor offset -> world position
             r_b = np.array(self._offsets_body[m])                      # should be shape (3,)
             r_w = R.apply(r_b)  # rotate offset into world       -       should be shape (num_envs,3)
@@ -151,10 +153,10 @@ class A4ForcesController:
 
             
             # thrust magnitude
-            Fm = self._cmd_to_thrust(cmds)                            # should be shape (num_envs,4)
-            thrust_dir_world_batched = torch.tensor(thrust_dir_world, device = "cuda:0").unsqueeze(1).repeat(1, 4, 1).clone()
+            thrust_val = self._cmd_to_thrust(cmds)                            # should be shape (num_envs,4)
+            thrust_dir_world_batched = torch.tensor(thrust_dir_world, dtype=torch.float32, device = "cuda:0").unsqueeze(1).repeat(1, 4, 1).clone()
                                                                       # should be shape (num_envs,4,3)
-            F_vec = thrust_dir_world_batched * Fm.unsqueeze(-1)       # should be shape (num_envs,4,3)
+            F_single_motor = thrust_dir_world_batched * thrust_val.unsqueeze(-1)       # should be shape (num_envs,4,3)
 
 
             # Verification
@@ -163,14 +165,14 @@ class A4ForcesController:
             #print(f"\nthrust_dir_world_batched.shape = {thrust_dir_world_batched.shape}\n") 
             #print(f"\nthrust_dir_world_batched =\n{thrust_dir_world_batched}\n")
                                                                       # should be shape (num_envs,4)
-            #print(f"\nFm.shape = {Fm.shape}")                         # should be shape (num_envs,4)
-            #print(f"Fm =\n", Fm, "\n")
-            #print(f"\nF_vec.shape = {F_vec.shape}")                   # should be shape (num_envs,4,3)
-            #print(f"F_vec =\n", F_vec, "\n")
+            #print(f"\nthrust_val.shape = {thrust_val.shape}")                         # should be shape (num_envs,4)
+            #print(f"thrust_val =\n", thrust_val, "\n")
+            #print(f"\nF_single_motor.shape = {F_single_motor.shape}")                   # should be shape (num_envs,4,3)
+            #print(f"F_single_motor =\n", F_single_motor, "\n")
 
 
             world_points.append(torch.tensor(p_app))  # List of numpy arrays
-            world_forces.append(F_vec)                # List of torch tensors
+            world_forces.append(F_single_motor)                # List of torch tensors
             
 
             # To compute the torque, we need the center of mass of the object that combines the three rigid bodies:
@@ -179,95 +181,41 @@ class A4ForcesController:
             #            the mass ratios of these bodies to their sum (to apply a weighted sum to the individual centers of mass)
             # Once these are known, a utility function does the job to compute the relevant COM
             
-            get_centers_of_mass(blk)
-
-            COM_list = []
-            for prim_list in blk:
-                masses = np.array([])
-                block_mass = np.array(0.0)
-                centers_of_mass = []
-                for j in range(3): 
-                    prim =  prim_list[j]
-                    mass_prim = prim.GetAttribute('physics:mass').Get()# physx_iface.get_rigid_body_mass(prim_path)
-                    a,b,c = prim.GetAttribute('physics:centerOfMass').Get() # physx_iface.get_rigid_body_center_of_mass(prim_path) # returns tuple of 3 floats
-                    com_world = [a,b,c]
-
-                    # Verification
-                    #print(f"mass of prim = ", mass_prim)
-                    #print(type(prim.GetAttribute('physics:centerOfMass').Get()))
-                    #print(type(a), type(b), type(c))
-                    #print(f"COM vec3f is \n",prim.GetAttribute('physics:centerOfMass').Get())
-                    #print(f"com_world is \n", com_world, "\n")
-
-                    masses = np.append(masses, mass_prim)
-                    block_mass += mass_prim
-                    centers_of_mass.append(com_world)         
-
-                    #xform = UsdGeom.Xformable(prim)
-                    #world_transform = xform.ComputeLocalToWorldTransform(0) # or (Usd.TimeCode.Default())
-                    #local_transform = world_transform.GetInverse() 
-
-                    #com_local_h = Gf.Vec4d(com_world[0], com_world[1], com_world[2], 1.0) * local_transform
-                    #com_local = Gf.Vec3d(com_local_h[0], com_local_h[1], com_local_h[2])
-
-                mass_prim = np.array(masses)
-                centers_of_mass = np.array(centers_of_mass)
-                prim_COM = np.average(centers_of_mass, axis=0, weights=mass_prim) #np.dot(mass_prim, centers_of_mass)   
-                prim_COM /= block_mass
-                COM_list.append(torch.tensor(prim_COM))
-
-                #print("torch.tensor(prim_COM) ", torch.tensor(prim_COM))
-
-            COMs = torch.stack(COM_list, dim=0).to("cuda:0")  # shape (n,3)
-            # Verification
-            #print(f"\ntensorized COMs.shape is ", COMs.shape)
-            #print(f"\ntensorized COMs.device is ", COMs.device)
-
-            # Now compute torque
-            r = (torch.tensor(p_app, dtype=torch.float32, device="cuda:0") - COMs).unsqueeze(1).expand(-1, 4, -1)  # should be (n, 4, 3)
-            torques = torch.cross(r, F_vec, dim=-1)
-            world_torques.append(torques)
             
+            #COMs = get_centers_of_mass(blk)   #  --> articulation API does better
+            COMs = art.data.body_com_pos_w        #  (num_envs, 3, 3)
+            COMs = COMs[:, body_index, :].float()
+     
+            # Verification
+            #print(f"\nCOMs.shape is ", COMs.shape)
+            #print(f"\nCOMs.device is ", COMs.device)
 
+            # Now compute torque   
+            r = (torch.tensor(p_app, dtype=torch.float32, device="cuda:0") - COMs).unsqueeze(1).expand(-1, nom, -1)  # should be (n, 4, 3)
+            torque_single_motor = torch.cross(r, F_single_motor, dim=-1)
+            world_torques.append(torque_single_motor)
+            
             if add_reaction_torque:
                 # Reaction torque around body z (world z after rotation) from rotation of the rotor. No yaw without it.
-                tz = self.p.torque_coeff * F_vec * self.p.spin_dirs[m]
-                
-                # Pick any unit vector perpendicular to thrust_dir_world
-                if np.allclose(thrust_dir_world, [0,0,1]):
-                    perp = np.array([1.0, 0.0, 0.0])
-                else:
-                    perp = np.cross(thrust_dir_world, [0,0,1])
-                    perp /= np.linalg.norm(perp)
+                reaction_torque_at_motor = self.p.torque_coeff * F_single_motor * self.p.spin_dirs[m]
+                reaction_torque_at_COM = reaction_torque_at_motor + torch.cross(-r, reaction_torque_at_motor, dim=-1)           
+                world_torques.append(reaction_torque_at_COM)
 
-                # Force magnitude to produce torque: |F| * d = torque
-                F_mag = tz / self.p.yaw_force_dist
-
-                # Two points along perpendicular direction
-                p1 = p_app + 0.5 * self.p.yaw_force_dist * perp
-                p2 = p_app - 0.5 * self.p.yaw_force_dist * perp
-
-                F1 = F_mag * perp
-                F2 = -F1
-
-                # Apply force at position
-                #rb_api.ApplyForceAtPos().Set([(F1, p1), (F2, p2)])
-                
-                world_points.extend([p1, p2])
-                world_forces.extend([F1, F2])
-
-        #print(f"test of torque = 0\n", world_torques[0])
+        #print(f"torque_single_motor = \n", torque_single_motor)
+        #print(f"reaction_torque_at_COM = \n", reaction_torque_at_COM)
+        #print(f"_world_torques = 0\n", world_torques)
        
-        ext_F       =  torch.stack(world_forces, dim=1).to("cuda:0").reshape(16, 16, 3)  # shape (n,m,3)
+
+        ext_F       =  torch.stack(world_forces, dim=1).to("cuda:0").reshape(nenvs, nom*len(world_forces),  3)  # shape (n,m,3)
         sum_ext_F       = torch.sum(ext_F, dim=1)
-        ext_torques = torch.stack(world_torques, dim=1).to("cuda:0").reshape(16, 16, 3)  # shape (n,m,3)
+        ext_torques = torch.stack(world_torques, dim=1).to("cuda:0").reshape(nenvs, nom*len(world_torques), 3)  # shape (n,m,3)
         sum_ext_torques = torch.sum(ext_torques, dim=1)
         
 
         # Format in the way articulation method expects
-        artF = torch.zeros((len(env_ids), nba, 3), dtype=torch.float32, device="cuda:0")
+        artF = torch.zeros((nenvs, nba, 3), dtype=torch.float32, device="cuda:0")
         artF[:, m-1, :] = sum_ext_F.float()
-        artT = torch.zeros((len(env_ids), nba, 3), dtype=torch.float32, device="cuda:0")
+        artT = torch.zeros((nenvs, nba, 3), dtype=torch.float32, device="cuda:0")
         artT[:, m-1, :] = sum_ext_torques.float()
         artnba=torch.arange(nba, device="cuda:0")
         
