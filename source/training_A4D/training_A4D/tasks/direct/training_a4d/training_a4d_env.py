@@ -116,13 +116,11 @@ class TrainingA4dEnv(DirectRLEnv):
 
 
             # List of rigid bodies in one agent A4 in env_0
-            A4_path = "/World/envs/env_0/A4/ASSEM4D_with_joints" #self.cfg.A4_RIGID_CFG.prim_path #"{ENV_REGEX_NS}"
+            A4_path = "/World/envs/env_0/A4/ASSEM4D_with_joints" 
             self.rigid_bodies = []    # List of rigid bodies in agent A4
             total_mass = 0.0
             for prim in self.stage.Traverse():
                 if str(prim.GetPath()).startswith(A4_path): 
-                    #print(f"\n{prim}   has applied schemas {prim.GetAppliedSchemas()}")
-                    #print(f"prim.HasAPI(UsdPhysics.RigidBodyAPI) is {prim.HasAPI(UsdPhysics.RigidBodyAPI)}")
                     if prim.HasAPI(UsdPhysics.RigidBodyAPI):
                         self.rigid_bodies.append(prim)
                     if prim.HasAPI(UsdPhysics.MassAPI):
@@ -153,7 +151,7 @@ class TrainingA4dEnv(DirectRLEnv):
                 print(  ["".join(f"{x.GetName()}\n") for x in rb]   )     
 
             # Verification: collect the prims where forces will be applied
-            self.name_drone = "tn__MODELSimpleDrone11_sQI" 
+            self.name_drone = "tn__Drone_body_with_flangesAssem4d1_ik0xp0" #"tn__MODELSimpleDrone11_sQI" 
             #nam0 = "/World/envs/env_.*/A4/ASSEM4D_with_joints/ASSEM4D/tn__Drone_body_with_flangesAssem4d1_ik0xp0"
             self.drone_bodies_prims = [prim for prim in self.stage.Traverse() 
                                 if ( (self.name_drone == str(prim.GetName())) and (prim.HasAPI(UsdPhysics.RigidBodyAPI)) ) ] # List of drone bodies in agent A4
@@ -226,7 +224,7 @@ class TrainingA4dEnv(DirectRLEnv):
                 self.actions, # Sequence[Sequence[float]]                   # TO-DO
                 add_reaction_torque = True
                 )
-            #self.art.write_data_to_sim()
+            self.art.write_data_to_sim()
         
 
 
@@ -279,7 +277,6 @@ class TrainingA4dEnv(DirectRLEnv):
             # Logging
             for key, value in rewards.items():
                 self._episode_sums[key] += value
-            print(f"reward ", reward.shape, " =\n", reward, "\n")   # expected (num_envs, )
             return reward
 
 
@@ -357,7 +354,7 @@ class TrainingA4dEnv(DirectRLEnv):
 
 
             # Now (re-)initialize task-specific parameters
-            self._actions[env_ids] = 0.0
+            self._actions[env_ids] = 0.0                      # (num_envs, 4)    ou         (num_envs, num_motors)
             # Sample new commands
             self._desired_pos_w[env_ids, :2] = torch.zeros_like(self._desired_pos_w[env_ids, :2]).uniform_(-2.0, 2.0)
             # Add offset due to cloning
@@ -373,13 +370,13 @@ class TrainingA4dEnv(DirectRLEnv):
             joint_vel = art.data.default_joint_vel[env_ids]
             art.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)  
             # articulation root
-            default_root_state = art.data.default_root_state[env_ids]
-            #default_root_state[:,:3] += self._terrain.env_origins[env_ids]
+            default_root_state = art.data.default_root_state[env_ids] 
+            default_root_state[:,:3] += self.scene.env_origins[env_ids]
             art.write_root_pose_to_sim(default_root_state[:,:7], env_ids)
             art.write_root_velocity_to_sim(default_root_state[:,7:], env_ids)
 
-            print(f"END RESET\n\n\n")
 
+            print(f"END RESET\n\n\n")
             #breakpoint()
 
             

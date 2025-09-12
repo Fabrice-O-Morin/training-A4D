@@ -3,6 +3,8 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+
+
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 #from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg
 from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg
@@ -16,6 +18,10 @@ from isaaclab.utils import configclass
 from .A4_contoller_cfg import A4ForcesController
 
 CUDA = "cuda:0"
+
+
+
+
 
 #class EnvWindow():
 #    """Window manager for the Quadcopter environment."""
@@ -35,25 +41,29 @@ CUDA = "cuda:0"
 #                    # add command manager visualization
 #                    self._create_debug_vis_ui_element("targets", self.env)
 
+
+
+
+
 @configclass
 class TrainingA4dSceneCfg(InteractiveSceneCfg):
     
-    # scene
-    # See the meaning of the args here: https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.scene.html#isaaclab.scene.InteractiveSceneCfg
-    env =  None # will be filled with to-clone assets later
-    num_envs=16 
-    env_spacing=2.0 
-    clone_in_fabric=False
-    replicate_physics=True 
-    filter_collisions=False
-    #terrain = sim_utils.GroundPlaneCfg(size=[25.0,25.0]),
-    
-    # ground plane
-    #ground_cfg = sim_utils.GroundPlaneCfg(size=[25.0,25.0])
-    #ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=ground_cfg)
-    ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=sim_utils.GroundPlaneCfg(size=[25.0,25.0], 
-             usd_path="https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Grid/default_environment.usd"
-                            ))
+        # scene
+        # See the meaning of the args here: https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.scene.html#isaaclab.scene.InteractiveSceneCfg
+        env =  None # will be filled with to-clone assets later
+        num_envs=16 
+        env_spacing=2.0 
+        clone_in_fabric=False
+        replicate_physics=True 
+        filter_collisions=False
+        #terrain = sim_utils.GroundPlaneCfg(size=[25.0,25.0]),
+        
+        # ground plane
+        #ground_cfg = sim_utils.GroundPlaneCfg(size=[25.0,25.0])
+        #ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=ground_cfg)
+        ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=sim_utils.GroundPlaneCfg(size=[25.0,25.0], 
+                usd_path="https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Grid/default_environment.usd"
+                                ))
 
     
 
@@ -62,85 +72,85 @@ class TrainingA4dSceneCfg(InteractiveSceneCfg):
 
 @configclass
 class TrainingA4dEnvCfg(DirectRLEnvCfg):
-    # env
-    episode_length_s = 10.0
-    decimation = 2
-    episode_length_s = 5.0
-    # - spaces definition
-    action_space = 4
-    observation_space = 12
-    state_space = 0
-    device = CUDA
+        # env
+        episode_length_s = 10.0
+        decimation = 2
+        episode_length_s = 5.0
+        # - spaces definition
+        action_space = 4
+        observation_space = 12
+        state_space = 0
+        device = CUDA
 
-    scene = TrainingA4dSceneCfg()
+        scene = TrainingA4dSceneCfg()
 
-    A4_RIGID_CFG = ArticulationCfg(
-        #prim_path = "{ENV_REGEX_NS}/A4",
-        prim_path = "/World/envs/env_.*/A4",
-        #prim_path = "/World/envs/env_0",
-        spawn = sim_utils.UsdFileCfg(
-            usd_path = f"/home/fom/Documents/ISAAC5/ASSEM4Dv2.usda",
-            scale=[0.001, 0.001, 0.001],
-            copy_from_source=False,
-        ),
-        actuators={
-        "dummy": ImplicitActuatorCfg(
-            joint_names_expr=[".*"],  # apply to all joints
-            stiffness=0.0,            # no spring-like behavior
-            damping=0.0,              # no damping either
-            )
-        },
-        #rigid_props = { ".*": sim_utils.RigidBodyPropertiesCfg(
-        #        disable_gravity = False,
-        #        max_depenetration_velocity = 10.0,
-        #        enable_gyroscopic_forces = True,
-        #        )},
-        init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.5),        # start 0.5 m above ground
-            rot=(0.0, 0.0, 0.0, 1.0),  # identity quaternion (x,y,z,w)
-            joint_pos={"Axle_to_holder": 0.0, "Axle_to_drone_block": 0.0},
-            #joint_vel,
-            #lin_vel,
-            #ang_vel,
-        ), # see: https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.assets.html#isaaclab.assets.ArticulationCfg.InitialStateCfg
-    )
+        A4_RIGID_CFG = ArticulationCfg(
+            #prim_path = "{ENV_REGEX_NS}/A4",
+            prim_path = "/World/envs/env_.*/A4",
+            #prim_path = "/World/envs/env_0",
+            spawn = sim_utils.UsdFileCfg(
+                #usd_path = f"/home/fom/models/ASSEM4Dv2.usda",
+                usd_path = f"/home/fom/Documents/ISAAC5/ASSEM4Dv2.usda",
+                scale=[0.001, 0.001, 0.001],
+                copy_from_source=False,
+            ),
+            actuators={
+            "dummy": ImplicitActuatorCfg(
+                joint_names_expr=[".*"],  # apply to all joints
+                stiffness=0.0,            # no spring-like behavior
+                damping=0.0,              # no damping either
+                )
+            },
+            #rigid_props = { ".*": sim_utils.RigidBodyPropertiesCfg(
+            #        disable_gravity = False,
+            #        max_depenetration_velocity = 10.0,
+            #        enable_gyroscopic_forces = True,
+            #        )},
+            init_state=ArticulationCfg.InitialStateCfg(
+                pos=(0.0, 0.0, 0.5),        # start 0.5 m above ground
+                rot=(0.0, 0.0, 0.0, 1.0),  # identity quaternion (x,y,z,w)
+                joint_pos={"Axle_to_holder": 0.0, "Axle_to_drone_block": 0.0},
+                #joint_vel,
+                #lin_vel,
+                #ang_vel,
+            ), # see: https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.assets.html#isaaclab.assets.ArticulationCfg.InitialStateCfg
+        )
 
-    ARTICULATIONS = [A4_RIGID_CFG]
+        ARTICULATIONS = [A4_RIGID_CFG]
 
-     # simulation
-    sim: SimulationCfg = SimulationCfg(dt = 1/100, 
-                                       device = CUDA,
-                                       render_interval = decimation
-                                       )
-   
+        # simulation
+        sim: SimulationCfg = SimulationCfg(dt = 1/100, 
+                                        device = CUDA,
+                                        render_interval = decimation
+                                        )
+    
+    # terrain / ground properties
+        #terrain = TerrainImporterCfg(
+        #    prim_path="/World/GroundPlane",
+        #    terrain_type="plane",
+        #    collision_group=-1,
+        #    physics_material=sim_utils.RigidBodyMaterialCfg(
+        #        friction_combine_mode="multiply",
+        #        restitution_combine_mode="multiply",
+        #        static_friction=1.0,
+        #        dynamic_friction=1.0,
+        #        restitution=0.0,
+        #    ),
+        #    debug_vis=False,
+        #)
 
-   # terrain / ground properties
-    #terrain = TerrainImporterCfg(
-    #    prim_path="/World/GroundPlane",
-    #    terrain_type="plane",
-    #    collision_group=-1,
-    #    physics_material=sim_utils.RigidBodyMaterialCfg(
-    #        friction_combine_mode="multiply",
-    #        restitution_combine_mode="multiply",
-    #        static_friction=1.0,
-    #        dynamic_friction=1.0,
-    #        restitution=0.0,
-    #    ),
-    #    debug_vis=False,
-    #)
-
-    # custom parameters/scales
-    thrust_to_weight = 1.9
-    moment_scale = 0.01
-    # - controllable joint
-    holder_dof_name = "axle_to_holder"
-    drone_dof_name  = "axle_to_drone"
-    # - action scale
-    action_scale = 100.0  # [N]
-    # - reward scales
-    lin_vel_reward_scale = -0.05
-    ang_vel_reward_scale = -0.01
-    distance_to_goal_reward_scale = 15.0
-    control = A4ForcesController()
+        # custom parameters/scales
+        thrust_to_weight = 1.9
+        moment_scale = 0.01
+        # - controllable joint
+        holder_dof_name = "axle_to_holder"
+        drone_dof_name  = "axle_to_drone"
+        # - action scale
+        action_scale = 100.0  # [N]
+        # - reward scales
+        lin_vel_reward_scale = -0.05
+        ang_vel_reward_scale = -0.01
+        distance_to_goal_reward_scale = 15.0
+        control = A4ForcesController()
 
     
