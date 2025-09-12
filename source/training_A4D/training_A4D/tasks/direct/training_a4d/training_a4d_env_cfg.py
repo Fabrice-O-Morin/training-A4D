@@ -3,12 +3,14 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-from isaaclab.assets import ArticulationCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+#from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg
+from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
-from isaaclab.terrains import TerrainImporterCfg
+#from isaaclab.terrains import TerrainImporterCfg
 import isaaclab.sim as sim_utils
 from isaaclab.utils import configclass
 from .A4_contoller_cfg import A4ForcesController
@@ -38,16 +40,23 @@ class TrainingA4dSceneCfg(InteractiveSceneCfg):
     
     # scene
     # See the meaning of the args here: https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.scene.html#isaaclab.scene.InteractiveSceneCfg
+    env =  None # will be filled with to-clone assets later
     num_envs=16 
-    env_spacing=3.0 
+    env_spacing=2.0 
     clone_in_fabric=False
     replicate_physics=True 
-    filter_collisions=True
-    #device = CUDA
+    filter_collisions=False
+    #terrain = sim_utils.GroundPlaneCfg(size=[25.0,25.0]),
+    
+    # ground plane
+    #ground_cfg = sim_utils.GroundPlaneCfg(size=[25.0,25.0])
+    #ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=ground_cfg)
+    ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=sim_utils.GroundPlaneCfg(size=[25.0,25.0], 
+             usd_path="https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Grid/default_environment.usd"
+                            ))
 
     
 
-   
 
 
 
@@ -71,6 +80,7 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
         #prim_path = "/World/envs/env_0",
         spawn = sim_utils.UsdFileCfg(
             usd_path = f"/home/fom/Documents/ISAAC5/ASSEM4Dv2.usda",
+            scale=[0.001, 0.001, 0.001],
             copy_from_source=False,
         ),
         actuators={
@@ -97,8 +107,6 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
 
     ARTICULATIONS = [A4_RIGID_CFG]
 
-
-
      # simulation
     sim: SimulationCfg = SimulationCfg(dt = 1/100, 
                                        device = CUDA,
@@ -107,19 +115,19 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
    
 
    # terrain / ground properties
-    terrain = TerrainImporterCfg(
-        prim_path="/World/GroundPlane",
-        terrain_type="plane",
-        collision_group=-1,
-        physics_material=sim_utils.RigidBodyMaterialCfg(
-            friction_combine_mode="multiply",
-            restitution_combine_mode="multiply",
-            static_friction=1.0,
-            dynamic_friction=1.0,
-            restitution=0.0,
-        ),
-        debug_vis=False,
-    )
+    #terrain = TerrainImporterCfg(
+    #    prim_path="/World/GroundPlane",
+    #    terrain_type="plane",
+    #    collision_group=-1,
+    #    physics_material=sim_utils.RigidBodyMaterialCfg(
+    #        friction_combine_mode="multiply",
+    #        restitution_combine_mode="multiply",
+    #        static_friction=1.0,
+    #        dynamic_friction=1.0,
+    #        restitution=0.0,
+    #    ),
+    #    debug_vis=False,
+    #)
 
     # custom parameters/scales
     thrust_to_weight = 1.9

@@ -115,8 +115,6 @@ class A4ForcesController:
 
         # Some verifications if need be
         #scrutinize_object(art, "scene.articulations")
-        #scrutinize_object(art, "world_pos")
-        #print(f"len(world_pos)", len(world_pos))
         #print(f"type(world_pos)", type(world_pos), "\n")
         #print(f"world_pos\n",world_pos, "\n\n")
 
@@ -125,7 +123,7 @@ class A4ForcesController:
         # Verification of motor commands (actions from policy)
         #print(f"cmds type = {type(cmds)}")  # Tensor num_envs,4
         #print(f"cmds =\n{cmds}")
-        #print(f"\ncmds shape = {cmds.shape}")  # Tensor num_envs,4
+        #print(f"\ncmds.shape = {cmds.shape}")  # Tensor num_envs,4
 
 
         # body z-axis (thrust direction) in world frame = Ri @ [0,0,1]
@@ -231,12 +229,12 @@ class A4ForcesController:
         #print(f"artnba.shape = ", artnba.shape, "type = ", artnba.dtype, " and device = ", artnba.device)
 
         # Apply total force and torque
-        art.set_external_force_and_torque(
-                                           forces = artF,
-                                           torques = artT,
-                                           body_ids = artnba,#None,#range(nba),
-                                           env_ids = env_ids
-                                         )
+        #art.set_external_force_and_torque(
+        #                                   forces = artF,
+        #                                   torques = artT,
+        #                                   body_ids = artnba,#None,#range(nba),
+        #                                   env_ids = env_ids
+        #                                 )
 
 
 
