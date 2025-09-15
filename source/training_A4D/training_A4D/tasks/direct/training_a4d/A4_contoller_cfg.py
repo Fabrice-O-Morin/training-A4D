@@ -35,7 +35,7 @@ class QuadMotorForcesParams:
     # Max thrust per motor (Newtons) at command = 1.0  (tuning for the model)
     max_thrust_N: float = 0.5
     # Optional: torque coefficient for yaw reaction (N·m per N of thrust)
-    torque_coeff: float = 0.005
+    torque_coeff: float = 0.05
     # For computing thrust, use quadratic mapping F = (cmd^2) * max_thrust  (common for BLDC)
     cmd_to_thrust_map = "quadratic_map"
 
@@ -69,7 +69,7 @@ class A4ForcesController:
 
     def _cmd_to_thrust(self, x): #-> torch.tensor 
             y = x.float() 
-            z  = torch.clamp(y, min=0, max=1.0)   # clamp between 0 and 1
+            z  = torch.clamp(y, min=-2.0, max=2.0)   # clamp between 0 and 1
             if self.p.cmd_to_thrust_map == "quadratic_map":
                 return (z ** 2) * self.p.max_thrust_N  # quadratic model of the thrust value as a function of input
             else:
@@ -97,14 +97,14 @@ class A4ForcesController:
             nom = self.p.number_of_motors
             nenvs = len(env_ids)
 
-            # Query world poses for the body (positions and orientations)
+            # Query world poses for the sepcific prim where forces are to applied (positions and orientations)
             xform = [UsdGeom.Xformable(p) for p in drones]
             world_transform = [xformi.ComputeLocalToWorldTransform(0.0) for xformi in xform]
             world_pos  = [wt.ExtractTranslation() for wt in world_transform]
             world_quat_temp = [wt.ExtractRotationQuat() for wt in world_transform]
-            world_quat = [np.array([w.GetReal(), *w.GetImaginary()]) for w in world_quat_temp]
+            world_quat = [np.array([w.GetReal(), *w.GetImaginary()]) for w in world_quat_temp]   # list of num_envs 4-dim arrays
             
-            R = Rotation.from_quat(world_quat, scalar_first=True)  # (N, 3, 3)
+            R = Rotation.from_quat(world_quat, scalar_first=True)  # (num_envs, nba, 3)
 
             # Precompute world-space application points and forces
             world_points = []
@@ -116,67 +116,62 @@ class A4ForcesController:
             #print(f"\ncmds.shape = {cmds.shape}")  # Tensor num_envs,4
 
 
-            # body z-axis (thrust direction) in world frame = Ri @ [0,0,1]
-            thrust_dir_world = R.apply([0.0, 0.0, 1.0])                    # should be shape (num_envs,3) 
+            # drone z-axis (thrust direction) in world frame = Ri @ [0,0,1]
+            thrust_dir_w = R.apply([0.0, 0.0, 1.0])                    # should be shape (num_envs,3) 
+            
+            # thrust magnitude
+            thrust_val = self._cmd_to_thrust(cmds)                     # should be tensor of shape (num_envs,4)
+            thrust_dir_world_batched = torch.tensor(thrust_dir_w, dtype=torch.float32, device = "cuda:0").unsqueeze(1).repeat(1, 4, 1).clone()
+                                                                    # should be shape (num_envs,4,3)
+            F_thrust_w = thrust_dir_world_batched * thrust_val.unsqueeze(-1)       # should be shape (num_envs,4,3)
 
+
+            # Verification
+            #ne = 7
+            #print(f"\ncmds[ne] = {cmds[ne,:]}")                    # should be (num_envs, 4)
+            #print(f"\nthrust_dir_world_batched =\n{thrust_dir_world_batched}\n")
+                                                                    # should be shape (num_envs,4)
+            #print(f"\nthrust_val.shape = {thrust_val.shape}")                         # should be shape (num_envs,4)
+            #print(f"thrust_val =\n", thrust_val, "\n")
+            #print(f"\nF_thrust_w[ne,:,:] =\n{F_thrust_w[ne,:,:]}")                   # should be shape (1,4,3)
+
+            world_forces.append(F_thrust_w)                # List of torch tensors   
+
+
+            # To compute the torque, we need the center of mass of the object that combines the three rigid bodies:
+            # For that, we need:           
+            #            the center of mass of each rigid body
+            #            the mass ratios of these bodies to their sum (to apply a weighted sum to the individual centers of mass)
+
+            COMs = art.data.body_com_pos_w        #  (num_envs, nba, 3)   with nba = number of bodies in articulation
+            COMs = COMs[:, body_index, :].float() #  (num_envs, 3)
 
             for m in range(nom):
                 # body-frame motor offset -> world position
                 r_b = np.array(self._offsets_body[m])                      # should be shape (3,)
                 r_w = R.apply(r_b)  # rotate offset into world       -       should be shape (num_envs,3)
-                p = np.array([[v[0], v[1], v[2]] for v in world_pos])      # should be shape (num_envs,3)
-                p_app = p + r_w
-                
-                
-                # thrust magnitude
-                thrust_val = self._cmd_to_thrust(cmds)                            # should be shape (num_envs,4)
-                thrust_dir_world_batched = torch.tensor(thrust_dir_world, dtype=torch.float32, device = "cuda:0").unsqueeze(1).repeat(1, 4, 1).clone()
-                                                                        # should be shape (num_envs,4,3)
-                F_single_motor = thrust_dir_world_batched * thrust_val.unsqueeze(-1)       # should be shape (num_envs,4,3)
+                p = np.array([[x[0], x[1], x[2]] for x in world_pos])      # should be shape (num_envs,3)
+                p_app_w = p + r_w                                            # should be shape (num_envs,3)
+                world_points.append(torch.tensor(p_app_w))           # List of torch tensors
 
-
-                # Verification
-                #print(f"\ncmds.shape = {cmds.shape}")                    # should be (num_envs, 4)
-                #print(f"\nthrust_dir_world_batched =\n{thrust_dir_world_batched}\n")
-                                                                        # should be shape (num_envs,4)
-                #print(f"\nthrust_val.shape = {thrust_val.shape}")                         # should be shape (num_envs,4)
-                #print(f"thrust_val =\n", thrust_val, "\n")
-                #print(f"\nF_single_motor.shape = {F_single_motor.shape}")                   # should be shape (num_envs,4,3)
-
-
-
-                world_points.append(torch.tensor(p_app))           # List of torch tensors
-                world_forces.append(F_single_motor)                # List of torch tensors    
-                
-
-                # To compute the torque, we need the center of mass of the object that combines the three rigid bodies:
-                # For that, we need:           
-                #            the center of mass of each rigid body
-                #            the mass ratios of these bodies to their sum (to apply a weighted sum to the individual centers of mass)
-                # Once these are known, a utility function does the job to compute the relevant COM
-                
-                
-                #COMs = get_centers_of_mass(blk)   #  --> articulation API does better
-                COMs = art.data.body_com_pos_w        #  (num_envs, 3, 3)
-                COMs = COMs[:, body_index, :].float()
-
-
-                # Now compute torque   
-                r = (torch.tensor(p_app, dtype=torch.float32, device="cuda:0") - COMs).unsqueeze(1).expand(-1, nom, -1)  # should be (n, 4, 3)
-                torque_single_motor = torch.cross(r, F_single_motor, dim=-1)
+                # Now compute torque on drone body resulting from thrust force   
+                #r = (torch.tensor(p_app, dtype=torch.float32, device="cuda:0") - COMs).unsqueeze(1).expand(-1, nom, -1) # should be (num_envs, 4, 3)
+                r_cx = torch.tensor(p_app_w, dtype=torch.float32, device="cuda:0") - COMs   # (num_envs, 3)
+                torque_single_motor = torch.cross(r_cx, F_thrust_w[:,m,:], dim=-1) # should be (num_envs, 4, 3)
                 world_torques.append(torque_single_motor)
                 
                 if add_reaction_torque:
                     # Reaction torque around body z (world z after rotation) from rotation of the rotor. No yaw without it.
-                    reaction_torque_at_motor = self.p.torque_coeff * F_single_motor * self.p.spin_dirs[m]
-                    reaction_torque_at_COM = reaction_torque_at_motor + torch.cross(-r, reaction_torque_at_motor, dim=-1)           
+                    reaction_torque_at_motor = self.p.torque_coeff * F_thrust_w[:,m,:] * self.p.spin_dirs[m]
+                    reaction_torque_at_COM = reaction_torque_at_motor + torch.cross(-r_cx, reaction_torque_at_motor, dim=-1)           
                     world_torques.append(reaction_torque_at_COM)
 
-        
 
-            ext_F       =  torch.stack(world_forces, dim=1).to("cuda:0").reshape(nenvs, nom*len(world_forces),  3)  # shape (n,m,3)
-            sum_ext_F       = torch.sum(ext_F, dim=1)
-            ext_torques = torch.stack(world_torques, dim=1).to("cuda:0").reshape(nenvs, nom*len(world_torques), 3)  # shape (n,m,3)
+            #ext_F       =  torch.stack(world_forces, dim=1).to("cuda:0").reshape(nenvs, nom*len(world_forces),  3)  # shape (n,m,3)
+            #sum_ext_F       = torch.sum(ext_F, dim=1)
+            sum_ext_F       = torch.sum(F_thrust_w, dim=1)                       # (num_envs, 3)
+            # at this stage, world_torques is a list of 8 (16,3) tensors
+            ext_torques = torch.stack(world_torques, dim=1).to("cuda:0").reshape(nenvs, len(world_torques), 3)  # shape (n,m,3)
             sum_ext_torques = torch.sum(ext_torques, dim=1)
             
 
@@ -205,6 +200,8 @@ class A4ForcesController:
                                             body_ids = artnba,#None,#range(nba),
                                             env_ids = env_ids
                                             )
+            
+            #breakpoint()
 
 
 

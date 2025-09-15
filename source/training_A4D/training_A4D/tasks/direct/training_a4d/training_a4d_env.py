@@ -229,7 +229,7 @@ class TrainingA4dEnv(DirectRLEnv):
 
 
 
-    def _get_observations(self) -> dict:     #{"policy": VecEnvObs}           # TO-DO
+    def _get_observations(self) -> dict:     #{"policy": VecEnvObs}          
             """Compute and return the observations for the environment.
 
             Returns:
@@ -248,32 +248,31 @@ class TrainingA4dEnv(DirectRLEnv):
                 dim=-1,
             )
             observations = {"policy": obs}                              # expected (num_envs, 12)
-
-            #print(f"self._desired_pos_w ", self._desired_pos_w.shape, " =\n", self._desired_pos_w, "\n") # expected (num_envs, 3)
-            #print(f"desired_pos_b ", desired_pos_b.shape, " =\n", desired_pos_b, "\n") # expected (num_envs, 3)
-            #print(f"observations ", obs.shape, " =\n", obs)             # expected (num_envs, 12)
-            #breakpoint()
-
             return observations
     
 
 
 
-    def _get_rewards(self) -> torch.Tensor:                             # TO-DO
+    def _get_rewards(self) -> torch.Tensor:                           
             """Compute and return the rewards for the environment.
             Returns:
                 The rewards for the environment. Shape is (num_envs,).
             """
+            # For info:
+            # lin_vel_reward_scale = -0.05
+            # ang_vel_reward_scale = -0.01
+            # distance_to_goal_reward_scale = 15.0
             lin_vel = torch.sum(torch.square(self.art.data.root_lin_vel_b), dim=1)
             ang_vel = torch.sum(torch.square(self.art.data.root_ang_vel_b), dim=1)
             distance_to_goal = torch.linalg.norm(self._desired_pos_w - self.art.data.root_pos_w, dim=1)
             distance_to_goal_mapped = 1 - torch.tanh(distance_to_goal / 0.8)
             rewards = {
-                "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
-                "ang_vel": ang_vel * self.cfg.ang_vel_reward_scale * self.step_dt,
-                "distance_to_goal": distance_to_goal_mapped * self.cfg.distance_to_goal_reward_scale * self.step_dt,
+                "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,  # expected  (num_envs, )
+                "ang_vel": ang_vel * self.cfg.ang_vel_reward_scale * self.step_dt,  # expected  (num_envs, )
+                "distance_to_goal": distance_to_goal_mapped * self.cfg.distance_to_goal_reward_scale * self.step_dt, # expected  (num_envs, )
             }
-            reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
+            stak = torch.stack(list(rewards.values()))                # expected  (3, num_envs)
+            reward = torch.sum(stak, dim=0)                           # expected  (num_envs, )
             # Logging
             for key, value in rewards.items():
                 self._episode_sums[key] += value
@@ -284,8 +283,8 @@ class TrainingA4dEnv(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
             time_out = self.episode_length_buf >= self.max_episode_length - 1
-            died = torch.logical_or(self.art.data.root_pos_w[:, 2] < 0.0, self.art.data.root_pos_w[:, 2] > 4.0)
-            #print(f"died ", died.shape, " =\n", died, "\n")        # expected (num_envs, )
+            died = torch.logical_or(self.art.data.root_pos_w[:, 2] < 0.0, self.art.data.root_pos_w[:, 2] > 40.0)
+            if not ((~died).all): print(f"\n\nSome agent died ", died, "\n\n")        # expected (num_envs, )
             return died, time_out
 
 
@@ -297,17 +296,9 @@ class TrainingA4dEnv(DirectRLEnv):
             Args:
                 env_ids: List of environment ids which must be reset
             """
-
             art = self.scene.articulations["Agent"]
             indices, _ = art.find_bodies(self.name_drone)
             self.drone_body_index_in_articulation = indices[0]
-            
-            # Verfication regarding articulation
-            #keys = list(self.scene.articulations.keys())
-            #print("\n\nAll articulation keys:", keys)
-            #print(f"art.find_bodies(name_drone) = ", art.find_bodies(self.name_drone)) # returns: ([2], ['tn__MODELSimpleDrone11_sQI'])
-            #print(f"shape of com_positions: ", com_positions.shape, "type = ", com_positions.dtype, " and device = ", com_positions.device)
-            #print(dir(art.data))
             
 
             # Set collision filtering
@@ -325,14 +316,17 @@ class TrainingA4dEnv(DirectRLEnv):
             
 
             # Logging the results of the previous episode
+            # For info, the keys are:
+            # lin_vel
+            # ang_vel
+            # distance_to_goal
             final_distance_to_goal = torch.linalg.norm(
-                #self._desired_pos_w[env_ids] - self.agent.data.root_pos_w[env_ids], dim=1
                 self._desired_pos_w[env_ids] - art.data.root_pos_w[env_ids], dim=1
                 ).mean()
 
             extras = dict()
-            for key in self._episode_sums.keys():
-                episodic_sum_avg = torch.mean(self._episode_sums[key][env_ids])
+            for key in self._episode_sums.keys():                                 # _episode_sums is initialised in __init__
+                episodic_sum_avg = torch.mean(self._episode_sums[key][env_ids])   # whatever key, _episode_sums[key][env_ids] is (num_envs,)
                 extras["Episode_Reward/" + key] = episodic_sum_avg / self.max_episode_length_s
                 self._episode_sums[key][env_ids] = 0.0
                 
@@ -343,10 +337,8 @@ class TrainingA4dEnv(DirectRLEnv):
             extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
             extras["Metrics/final_distance_to_goal"] = final_distance_to_goal.item()
             self.extras["log"].update(extras)
-            
 
             super()._reset_idx(env_ids)
-
 
             # Spread out the resets to avoid spikes in training when many environments reset at a similar time
             #if len(env_ids) == self.num_envs:  
@@ -362,7 +354,7 @@ class TrainingA4dEnv(DirectRLEnv):
             #self._desired_pos_w[env_ids, :2] += self._terrain.env_origins[env_ids, :2]
             # otherwise, if using groundPlane
             self._desired_pos_w[env_ids, :2] += self.scene.env_origins[env_ids, :2] + self.art.data.default_root_state[env_ids, :2]    # TO-DO is in the local env plane.
-            self._desired_pos_w[env_ids, 2] = torch.zeros_like(self._desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
+            self._desired_pos_w[env_ids, 2] = torch.zeros_like(self._desired_pos_w[env_ids, 2]).uniform_(1.0, 2.0)
             
             # Reset agent state
             # joints

@@ -51,8 +51,8 @@ class TrainingA4dSceneCfg(InteractiveSceneCfg):
         # scene
         # See the meaning of the args here: https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.scene.html#isaaclab.scene.InteractiveSceneCfg
         env =  None # will be filled with to-clone assets later
-        num_envs=16 
-        env_spacing=2.0 
+        num_envs=4
+        env_spacing=2.5 
         clone_in_fabric=False
         replicate_physics=True 
         filter_collisions=False
@@ -90,7 +90,7 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
             #prim_path = "/World/envs/env_0",
             spawn = sim_utils.UsdFileCfg(
                 #usd_path = f"/home/fom/models/ASSEM4Dv2.usda",
-                usd_path = f"/home/fom/Documents/ISAAC5/ASSEM4Dv2.usda",
+                usd_path = f"/home/fom/Documents/ISAAC5/ASSEM4Dv3.usda",
                 scale=[0.001, 0.001, 0.001],
                 copy_from_source=False,
             ),
@@ -107,7 +107,7 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
             #        enable_gyroscopic_forces = True,
             #        )},
             init_state=ArticulationCfg.InitialStateCfg(
-                pos=(0.0, 0.0, 0.5),        # start 0.5 m above ground
+                pos=(0.0, 0.0, 0.4),        # start 0.4 m above ground
                 rot=(0.0, 0.0, 0.0, 1.0),  # identity quaternion (x,y,z,w)
                 joint_pos={"Axle_to_holder": 0.0, "Axle_to_drone_block": 0.0},
                 #joint_vel,
