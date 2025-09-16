@@ -29,7 +29,7 @@ from .utils import print_hierarchy
 #import training_a4d.tasks.direct.training_a4d.utils
 
 
-
+DEBUG = False
 
 class TrainingA4dEnv(DirectRLEnv):
     cfg: TrainingA4dEnvCfg
@@ -84,7 +84,7 @@ class TrainingA4dEnv(DirectRLEnv):
                 self.scene = InteractiveScene(self.cfg.scene)
                 self._setup_scene()
             """
-            print(f"\n\nENTERING _SETUP_SCENE\n\n")
+            if DEBUG: print(f"\n\nENTERING _SETUP_SCENE\n\n")
 
             self.stage = omni.usd.get_context().get_stage()
 
@@ -127,9 +127,9 @@ class TrainingA4dEnv(DirectRLEnv):
                         mass_api = UsdPhysics.MassAPI(prim)
                         mass_attr = mass_api.GetMassAttr()
                         if mass_attr.HasAuthoredValue(): total_mass += mass_attr.Get()                    
-            print(  f"\nRigid bodies:\n"  +  "".join([f"{rb.GetPath()}\n" for rb in self.rigid_bodies])  )
+            if DEBUG: print(  f"\nRigid bodies:\n"  +  "".join([f"{rb.GetPath()}\n" for rb in self.rigid_bodies])  )
             self._total_mass = total_mass
-            print(f"\nself._total_mass = ", total_mass, "\n")
+            if DEBUG: print(f"\nself._total_mass = ", total_mass, "\n")
 
             # Verification: List of joints in agent A4 in env_0
             self.joints = []    
@@ -137,7 +137,7 @@ class TrainingA4dEnv(DirectRLEnv):
                 if str(prim.GetPath()).startswith(A4_path): 
                     if UsdPhysics.Joint(prim):
                         self.joints.append(prim)                  
-            print(  f"\nJoints:\n"  +  "".join([f"{rb.GetPath()}\n" for rb in self.joints])  )
+            if DEBUG: print(  f"\nJoints:\n"  +  "".join([f"{rb.GetPath()}\n" for rb in self.joints])  )
 
             # List of rigid bodies making up the drone block in all agents
             self.prims_drone_block = []
@@ -146,16 +146,17 @@ class TrainingA4dEnv(DirectRLEnv):
                 if str(prim.GetName()) == nam_obj:
                     prim_block = prim.GetChildren()  
                     self.prims_drone_block.append(prim_block)
-            print(  f"\nPrims of all drone blocks:")
-            for rb in self.prims_drone_block:       
-                print(  ["".join(f"{x.GetName()}\n") for x in rb]   )     
+            if DEBUG:
+                print(  f"\nPrims of all drone blocks:")
+                for rb in self.prims_drone_block:       
+                    print(  ["".join(f"{x.GetName()}\n") for x in rb]   )     
 
             # Verification: collect the prims where forces will be applied
             self.name_drone = "tn__Drone_body_with_flangesAssem4d1_ik0xp0" #"tn__MODELSimpleDrone11_sQI" 
             #nam0 = "/World/envs/env_.*/A4/ASSEM4D_with_joints/ASSEM4D/tn__Drone_body_with_flangesAssem4d1_ik0xp0"
             self.drone_bodies_prims = [prim for prim in self.stage.Traverse() 
                                 if ( (self.name_drone == str(prim.GetName())) and (prim.HasAPI(UsdPhysics.RigidBodyAPI)) ) ] # List of drone bodies in agent A4
-            print("\n\nDrone bodies as prims:\n", "".join([f"{str(prim.GetPath())}\n" for prim in self.drone_bodies_prims]), f"\n")
+            if DEBUG: print("\n\nDrone bodies as prims:\n", "".join([f"{str(prim.GetPath())}\n" for prim in self.drone_bodies_prims]), f"\n")
         
 
             # Verification of hierarchy
@@ -164,7 +165,9 @@ class TrainingA4dEnv(DirectRLEnv):
             self.art = self.scene.articulations["Agent"]
             self.env_ids = torch.arange(self.num_envs, dtype=torch.int64, device=self.device)
 
-            print(f"\n\nEND SETUP_SCENE\n\n\n")
+            self.first_reset = True
+
+            if DEBUG: print(f"\n\nEND SETUP_SCENE\n\n\n")
 
 
 
@@ -204,8 +207,14 @@ class TrainingA4dEnv(DirectRLEnv):
             Args:
                 actions: The actions to apply on the environment. Shape is (num_envs, action_dim).
             """
-            self.actions = actions.clone()
-            #self._actions = actions.clone().clamp(-1.0, 1.0)
+            if DEBUG: print("pre-physics")
+            #self._actions = actions.clone()
+            self._actions = actions.clone().clamp(-2.0, 1.0)
+            COMs = self.art.data.body_com_pos_w        #  (num_envs, nba, 3)   with nba = number of bodies in articulation
+            if DEBUG:
+                COMs = COMs[:, 2, :].float() #  (num_envs, 3)
+                print(f"self._actions = {self._actions}\n")
+                print("COMs =\n", COMs)
 
 
 
@@ -215,16 +224,19 @@ class TrainingA4dEnv(DirectRLEnv):
             This function is responsible for applying the actions to the simulator. It is called at each
             physics time-step.
             """
+            if DEBUG: print("apply action")
             self.control.apply_forces( 
                 self.drone_bodies_prims,
                 self.env_ids,
                 self.drone_body_index_in_articulation,
                 self.number_of_bodies_in_articulation,
                 self.art,
-                self.actions, # Sequence[Sequence[float]]                   # TO-DO
-                add_reaction_torque = True
+                self.device,
+                self._actions, # Sequence[Sequence[float]]                   # TO-DO
+                add_reaction_torque = False
                 )
             self.art.write_data_to_sim()
+            
         
 
 
@@ -235,6 +247,7 @@ class TrainingA4dEnv(DirectRLEnv):
             Returns:
                 The observations for the environment.
             """
+            if DEBUG: print("get observations")
             desired_pos_b, _ = subtract_frame_transforms(
                 self.agent.data.root_pos_w, self.agent.data.root_quat_w, self._desired_pos_w
             )                                                           # expected (num_envs, 3)
@@ -248,6 +261,18 @@ class TrainingA4dEnv(DirectRLEnv):
                 dim=-1,
             )
             observations = {"policy": obs}                              # expected (num_envs, 12)
+
+            if self.first_reset:
+                 pass
+            else:
+                assert not torch.isnan(obs).any(), "WARNING ISNAN in obs"
+                assert not torch.isinf(obs).any(), "WARNING ISINF in obs"
+                assert torch.linalg.norm(desired_pos_b) < 10**3, "EXPLODING desired_pos_b"
+                if DEBUG: 
+                    COMs = self.art.data.body_com_pos_w        #  (num_envs, nba, 3)   with nba = number of bodies in articulation
+                    COMs = COMs[:, 2, :].float() #  (num_envs, 3)
+                    print("COMs =\n", COMs)
+
             return observations
     
 
@@ -258,6 +283,7 @@ class TrainingA4dEnv(DirectRLEnv):
             Returns:
                 The rewards for the environment. Shape is (num_envs,).
             """
+            if DEBUG: print("get rewards")
             # For info:
             # lin_vel_reward_scale = -0.05
             # ang_vel_reward_scale = -0.01
@@ -276,15 +302,32 @@ class TrainingA4dEnv(DirectRLEnv):
             # Logging
             for key, value in rewards.items():
                 self._episode_sums[key] += value
+            if self.first_reset:
+                 pass
+            else:
+                if DEBUG:
+                    COMs = self.art.data.body_com_pos_w        #  (num_envs, nba, 3)   with nba = number of bodies in articulation
+                    COMs = COMs[:, 2, :].float() #  (num_envs, 3)
+                    print("COMs =\n", COMs)
+                    print(f"self._actions = {self._actions}\n")
             return reward
 
 
 
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+            if DEBUG: print("get dones")
             time_out = self.episode_length_buf >= self.max_episode_length - 1
             died = torch.logical_or(self.art.data.root_pos_w[:, 2] < 0.0, self.art.data.root_pos_w[:, 2] > 40.0)
             if not ((~died).all): print(f"\n\nSome agent died ", died, "\n\n")        # expected (num_envs, )
+            if self.first_reset:
+                 pass
+            else:
+                if DEBUG:
+                    COMs = self.art.data.body_com_pos_w        #  (num_envs, nba, 3)   with nba = number of bodies in articulation
+                    COMs = COMs[:, 2, :].float() #  (num_envs, 3)
+                    print("COMs =\n", COMs)
+                    print(f"self._actions = {self._actions}\n")
             return died, time_out
 
 
@@ -296,6 +339,7 @@ class TrainingA4dEnv(DirectRLEnv):
             Args:
                 env_ids: List of environment ids which must be reset
             """
+            if DEBUG: print(f"reset_idx for env_ids = {env_ids}")
             art = self.scene.articulations["Agent"]
             indices, _ = art.find_bodies(self.name_drone)
             self.drone_body_index_in_articulation = indices[0]
@@ -313,7 +357,18 @@ class TrainingA4dEnv(DirectRLEnv):
 
             if env_ids is None:
                 env_ids = torch.arange(self.num_envs, dtype=torch.int64, device=self.device)
+            else:
+                 pass #print(f"\nReset for env_ids = {env_ids}\n")
             
+            # Checking for NaN or inf
+            if self.first_reset:
+                 pass
+            else:
+                assert not torch.isnan(self.actions).any(), "WARNING ISNAN in actions"
+                assert not torch.isinf(self.actions).any(), "WARNING ISINF in actions"
+                assert not torch.isnan(art.data.body_com_pos_w).any(), "WARNING ISNAN in COM position"
+                assert not torch.isinf(art.data.body_com_pos_w).any(), "WARNING ISNINF in COM position"
+            self.first_reset = False
 
             # Logging the results of the previous episode
             # For info, the keys are:
@@ -347,7 +402,7 @@ class TrainingA4dEnv(DirectRLEnv):
 
             # Now (re-)initialize task-specific parameters
             self._actions[env_ids] = 0.0                      # (num_envs, 4)    ou         (num_envs, num_motors)
-            # Sample new commands
+            # Sample new targets
             self._desired_pos_w[env_ids, :2] = torch.zeros_like(self._desired_pos_w[env_ids, :2]).uniform_(-2.0, 2.0)
             # Add offset due to cloning
             # if using terrain:
@@ -360,15 +415,26 @@ class TrainingA4dEnv(DirectRLEnv):
             # joints
             joint_pos = art.data.default_joint_pos[env_ids]
             joint_vel = art.data.default_joint_vel[env_ids]
-            art.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)  
+            art.write_joint_state_to_sim(position=joint_pos, velocity=joint_vel, env_ids=env_ids)  
+            
             # articulation root
-            default_root_state = art.data.default_root_state[env_ids] 
+            default_root_state = art.data.default_root_state[env_ids]
             default_root_state[:,:3] += self.scene.env_origins[env_ids]
+            #print("default_root_state =\n", default_root_state)
+            assert len(env_ids) == len(default_root_state), "length of env_ids not matching default_root_state in reset function" 
             art.write_root_pose_to_sim(default_root_state[:,:7], env_ids)
             art.write_root_velocity_to_sim(default_root_state[:,7:], env_ids)
 
+            if self.first_reset:
+                 pass
+            else:
+                if DEBUG:
+                    COMs = self.art.data.body_com_pos_w        #  (num_envs, nba, 3)   with nba = number of bodies in articulation
+                    COMs = COMs[:, 2, :].float() #  (num_envs, 3)
+                    print("COMs =\n", COMs)
+                    print(f"self._actions = {self._actions}\n")
 
-            print(f"END RESET\n\n\n")
+            #print(f"END RESET\n\n\n")
             #breakpoint()
 
             

@@ -17,7 +17,7 @@ import isaaclab.sim as sim_utils
 from pxr import UsdGeom, PhysxSchema, UsdPhysics, Usd, Gf
 from scipy.spatial.transform import Rotation
 
-
+DEBUG = True
 
 """Configuration for the A4 as a single rigid body (no articulation)."""
 
@@ -33,7 +33,7 @@ class QuadMotorForcesParams:
     # +1 / -1 spin directions for yaw reaction torque (if one wants to add torques)
     spin_dirs: Tuple[int, int, int, int] = (+1, -1, +1, -1)
     # Max thrust per motor (Newtons) at command = 1.0  (tuning for the model)
-    max_thrust_N: float = 0.5
+    max_thrust_N: float = 1
     # Optional: torque coefficient for yaw reaction (N·m per N of thrust)
     torque_coeff: float = 0.05
     # For computing thrust, use quadratic mapping F = (cmd^2) * max_thrust  (common for BLDC)
@@ -65,6 +65,7 @@ class A4ForcesController:
     def __init__(self, params: QuadMotorForcesParams = QuadMotorForcesParams()):
             self.p = params
             self._offsets_body = self.p.motor_offsets_body()
+            self.first_pass = True
 
 
     def _cmd_to_thrust(self, x): #-> torch.tensor 
@@ -83,6 +84,7 @@ class A4ForcesController:
             body_index,     # index of the body inside the articulatio where force is to be applied
             nba,            # numbers of bodies in one articulation
             art,
+            device_from_cfg,
             motor_cmds01: Sequence[Sequence[float]],
             add_reaction_torque: bool = True,
             ):
@@ -94,6 +96,14 @@ class A4ForcesController:
                 motor_cmds01: shape (len(env_ids), 4), normalized [0..1]
                 add_reaction_torque: if True, apply yaw torques from rotor drag
             """
+            if self.first_pass:
+                 pass
+            else:
+                assert not torch.isnan(motor_cmds01).any(), "WARNING ISNAN in motor_cmds01"
+                assert not torch.isinf(motor_cmds01).any(), "WARNING ISINF in artF"
+                
+
+
             nom = self.p.number_of_motors
             nenvs = len(env_ids)
 
@@ -121,7 +131,7 @@ class A4ForcesController:
             
             # thrust magnitude
             thrust_val = self._cmd_to_thrust(cmds)                     # should be tensor of shape (num_envs,4)
-            thrust_dir_world_batched = torch.tensor(thrust_dir_w, dtype=torch.float32, device = "cuda:0").unsqueeze(1).repeat(1, 4, 1).clone()
+            thrust_dir_world_batched = torch.tensor(thrust_dir_w, dtype=torch.float32, device = device_from_cfg).unsqueeze(1).repeat(1, 4, 1).clone()
                                                                     # should be shape (num_envs,4,3)
             F_thrust_w = thrust_dir_world_batched * thrust_val.unsqueeze(-1)       # should be shape (num_envs,4,3)
 
@@ -145,6 +155,7 @@ class A4ForcesController:
 
             COMs = art.data.body_com_pos_w        #  (num_envs, nba, 3)   with nba = number of bodies in articulation
             COMs = COMs[:, body_index, :].float() #  (num_envs, 3)
+            #print("COMs =\n", COMs)
 
             for m in range(nom):
                 # body-frame motor offset -> world position
@@ -154,11 +165,35 @@ class A4ForcesController:
                 p_app_w = p + r_w                                            # should be shape (num_envs,3)
                 world_points.append(torch.tensor(p_app_w))           # List of torch tensors
 
+                if self.first_pass:
+                    pass
+                else:
+                    assert not torch.isnan(COMs).any(), "WARNING ISNAN in COMs"
+                    assert not torch.isinf(COMs).any(), "WARNING ISINF in COMs"
+                    assert torch.linalg.norm(COMs)<10**3, "WARNING EXPLODING COMs"
+                    assert not np.isnan(r_b).any(), "WARNING ISNAN in r_b"
+                    assert not np.isinf(r_b).any(), "WARNING ISINF in r_b"
+                    assert not np.isnan(r_w).any(), "WARNING ISNAN in r_w"
+                    assert not np.isinf(r_w).any(), "WARNING ISINF in r_w"
+                    assert not np.isnan(p).any(), "WARNING ISNAN in p"
+                    assert not np.isinf(p).any(), "WARNING ISINF in p"
+                    assert not np.isnan(p_app_w).any(), "WARNING ISNAN in p_app_w"
+                    assert not np.isinf(p_app_w).any(), "WARNING ISINF in p_app_w"
+                    #print("norm of COMs =\n", torch.linalg.norm(COMs))
+                    #print("norm of r_b =\n", np.linalg.norm(r_b))
+                    #print("norm of r_w =\n", np.linalg.norm(r_w))
+                    #print("norm of p =\n", np.linalg.norm(p))
+                    #print("norm of p_app_w =\n", np.linalg.norm(p_app_w))
+                
                 # Now compute torque on drone body resulting from thrust force   
-                #r = (torch.tensor(p_app, dtype=torch.float32, device="cuda:0") - COMs).unsqueeze(1).expand(-1, nom, -1) # should be (num_envs, 4, 3)
-                r_cx = torch.tensor(p_app_w, dtype=torch.float32, device="cuda:0") - COMs   # (num_envs, 3)
+                #r = (torch.tensor(p_app, dtype=torch.float32, device=device_from_cfg) - COMs).unsqueeze(1).expand(-1, nom, -1) # should be (num_envs, 4, 3)
+                r_cx = torch.tensor(p_app_w, dtype=torch.float32, device=device_from_cfg) - COMs   # (num_envs, 3)
                 torque_single_motor = torch.cross(r_cx, F_thrust_w[:,m,:], dim=-1) # should be (num_envs, 4, 3)
                 world_torques.append(torque_single_motor)
+
+                #print("norm of r_cx =\n", torch.linalg.norm(r_cx))
+                #print("norm of F_thrust =\n", torch.linalg.norm(F_thrust_w[:,m,:]))
+                #print("norm of torque =\n", torch.linalg.norm(torque_single_motor))
                 
                 if add_reaction_torque:
                     # Reaction torque around body z (world z after rotation) from rotation of the rotor. No yaw without it.
@@ -167,20 +202,26 @@ class A4ForcesController:
                     world_torques.append(reaction_torque_at_COM)
 
 
-            #ext_F       =  torch.stack(world_forces, dim=1).to("cuda:0").reshape(nenvs, nom*len(world_forces),  3)  # shape (n,m,3)
+            #ext_F       =  torch.stack(world_forces, dim=1).to(device_from_cfg).reshape(nenvs, nom*len(world_forces),  3)  # shape (n,m,3)
             #sum_ext_F       = torch.sum(ext_F, dim=1)
             sum_ext_F       = torch.sum(F_thrust_w, dim=1)                       # (num_envs, 3)
             # at this stage, world_torques is a list of 8 (16,3) tensors
-            ext_torques = torch.stack(world_torques, dim=1).to("cuda:0").reshape(nenvs, len(world_torques), 3)  # shape (n,m,3)
+            ext_torques = torch.stack(world_torques, dim=1).to(device_from_cfg).reshape(nenvs, len(world_torques), 3)  # shape (n,m,3)
             sum_ext_torques = torch.sum(ext_torques, dim=1)
             
 
-            # Format in the way articulation method expects
-            artF = torch.zeros((nenvs, nba, 3), dtype=torch.float32, device="cuda:0")
+            # Format in the way articulation method expects, with precision prec
+            prec = 4
+
+            artF = torch.zeros((nenvs, nba, 3), dtype=torch.float32, device=device_from_cfg)
             artF[:, m-1, :] = sum_ext_F.float()
-            artT = torch.zeros((nenvs, nba, 3), dtype=torch.float32, device="cuda:0")
+            artF = torch.round(artF * 10**prec)/(10**prec)
+
+            artT = torch.zeros((nenvs, nba, 3), dtype=torch.float32, device=device_from_cfg)
             artT[:, m-1, :] = sum_ext_torques.float()
-            artnba=torch.arange(nba, device="cuda:0")
+            artT = torch.round(artT * 10**prec)/(10**prec)
+
+            artnba=torch.arange(nba, device=device_from_cfg)
             
             # Verification
             #print(f"ext_torques.shape = ", ext_torques.shape)
@@ -195,11 +236,28 @@ class A4ForcesController:
 
             # Apply total force and torque
             art.set_external_force_and_torque(
-                                            forces = artF,
+                                            forces  = artF,
                                             torques = artT,
                                             body_ids = artnba,#None,#range(nba),
                                             env_ids = env_ids
                                             )
+            #print(f"artF =\n", artF, "\n\n")
+            #print(f"artT =\n", artT, "\n\n")
+            torch.cuda.synchronize()
+            if self.first_pass:
+                 pass
+            else:
+                assert not torch.isnan(artF).any(), "WARNING ISNAN in artF"
+                assert not torch.isinf(artF).any(), "WARNING ISINF in artF"
+                assert torch.linalg.norm(artF)<len(env_ids)*10, "WARNING artF explodiing"
+                assert not torch.isnan(artT).any(), "WARNING ISNAN in artT"
+                assert not torch.isinf(artT).any(), "WARNING ISNINF in artT"
+                assert torch.linalg.norm(artT)<len(env_ids)*10, "WARNING artT explodiing"
+            self.first_pass = False
+
+
+
+
             
             #breakpoint()
 

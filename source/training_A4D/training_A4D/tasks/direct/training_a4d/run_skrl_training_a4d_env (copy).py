@@ -58,14 +58,14 @@ cfg["rollouts"] = 16
 cfg["learning_epochs"] = 5
 cfg["mini_batches"] = 2
 cfg["discount_factor"] = 0.99
-cfg["learning_rate"] = 5e-4
+cfg["learning_rate"] = 1e-3
 cfg["state_preprocessor"] = RunningStandardScaler
 
 agent = PPO(models={"policy": policy, "value": value}, memory=None, cfg=cfg, env=env, device=device)
 
 
 # 4. Trainer
-trainer = SequentialTrainer(cfg={"timesteps": 100_000_000}, env=env, agents=agent)
+trainer = SequentialTrainer(cfg={"timesteps": 1_000}, env=env, agents=agent)
 
 # 5. Train
 trainer.train()

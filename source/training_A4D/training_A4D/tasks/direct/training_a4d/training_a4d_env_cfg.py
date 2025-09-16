@@ -17,7 +17,9 @@ import isaaclab.sim as sim_utils
 from isaaclab.utils import configclass
 from .A4_contoller_cfg import A4ForcesController
 
-CUDA = "cuda:0"
+DEVICE = "cuda:0"
+DT_SIM = 1/1000
+DT_LEARNING = 1 / 50
 
 
 
@@ -51,17 +53,17 @@ class TrainingA4dSceneCfg(InteractiveSceneCfg):
         # scene
         # See the meaning of the args here: https://isaac-sim.github.io/IsaacLab/main/source/api/lab/isaaclab.scene.html#isaaclab.scene.InteractiveSceneCfg
         env =  None # will be filled with to-clone assets later
-        num_envs=4
+        num_envs=256
         env_spacing=2.5 
         clone_in_fabric=False
-        replicate_physics=True 
-        filter_collisions=False
+        replicate_physics=True
+        filter_collisions=True
         #terrain = sim_utils.GroundPlaneCfg(size=[25.0,25.0]),
         
         # ground plane
         #ground_cfg = sim_utils.GroundPlaneCfg(size=[25.0,25.0])
         #ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=ground_cfg)
-        ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=sim_utils.GroundPlaneCfg(size=[25.0,25.0], 
+        ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=sim_utils.GroundPlaneCfg(size=[110.0,110.0], 
                 usd_path="https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Grid/default_environment.usd"
                                 ))
 
@@ -73,14 +75,13 @@ class TrainingA4dSceneCfg(InteractiveSceneCfg):
 @configclass
 class TrainingA4dEnvCfg(DirectRLEnvCfg):
         # env
-        episode_length_s = 10.0
-        decimation = 2
-        episode_length_s = 5.0
+        decimation = int(DT_LEARNING/DT_SIM)
+        episode_length_s = 4.0
         # - spaces definition
         action_space = 4
         observation_space = 12
         state_space = 0
-        device = CUDA
+        device = DEVICE
 
         scene = TrainingA4dSceneCfg()
 
@@ -90,7 +91,7 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
             #prim_path = "/World/envs/env_0",
             spawn = sim_utils.UsdFileCfg(
                 #usd_path = f"/home/fom/models/ASSEM4Dv2.usda",
-                usd_path = f"/home/fom/Documents/ISAAC5/ASSEM4Dv3.usda",
+                usd_path = f"/home/fom/Documents/ISAAC5/ASSEM4Dv3.usda", #  _simpleColliders
                 scale=[0.001, 0.001, 0.001],
                 copy_from_source=False,
             ),
@@ -119,8 +120,8 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
         ARTICULATIONS = [A4_RIGID_CFG]
 
         # simulation
-        sim: SimulationCfg = SimulationCfg(dt = 1/100, 
-                                        device = CUDA,
+        sim: SimulationCfg = SimulationCfg(dt = 1/1000, 
+                                        device = DEVICE,
                                         render_interval = decimation
                                         )
     
@@ -140,8 +141,8 @@ class TrainingA4dEnvCfg(DirectRLEnvCfg):
         #)
 
         # custom parameters/scales
-        thrust_to_weight = 1.9
-        moment_scale = 0.01
+        #thrust_to_weight = 1.9
+        #moment_scale = 0.01
         # - controllable joint
         holder_dof_name = "axle_to_holder"
         drone_dof_name  = "axle_to_drone"
